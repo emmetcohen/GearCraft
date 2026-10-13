@@ -109,7 +109,11 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
       for (const m of mine) {
         const target = c.r + m.r;
         const err = Math.abs(d - target);
-        if (err < MESH_SNAP && (!best || err < best.err)) {
+        // Snap when close to the meshing distance, OR when dropped overlapping
+        // the other gear (push it out to mesh) — overlapping-but-not-meshed
+        // gears would just be confusing.
+        const near = err < MESH_SNAP || (d < target && d > SOCKET_SNAP);
+        if (near && (!best || err < best.err)) {
           best = { err, x: c.x + ((x - c.x) / d) * target, y: c.y + ((y - c.y) / d) * target, c };
         }
       }

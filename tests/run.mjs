@@ -7,6 +7,7 @@ import { Simulation, radToRpm, DT } from '../src/physics/world.js';
 import { EXAMPLES } from '../src/save/examples.js';
 import { toFile, fromFile } from '../src/save/storage.js';
 import { findMeshes } from '../src/physics/gearTrain.js';
+import { snapPart } from '../src/parts/snap.js';
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -260,6 +261,44 @@ test('example "Torque test": direct arm stalls, geared arm lifts', () => {
   assert(sim.telemetry.get(b.parts[0].uid).stalled, 'direct motor stalls');
   assert(!sim.telemetry.get(b.parts[3].uid).stalled, 'geared motor keeps going');
   assert(sim.transformOf(b.parts[8].uid).angle > 0.5, 'geared arm rose');
+});
+
+
+console.log('\nSnapping');
+
+test('snap: a gear dropped near another slides to exactly r1 + r2 and meshes', () => {
+  const b = emptyBuild(); addPart(b, 'gear-12', 0, 0);
+  const s = snapPart(b.parts, 'gear-24', 3.3, 0.4, 0);
+  near(Math.hypot(s.x, s.y), 3.6, 1e-9, 'centre distance');
+  assert(s.hint.includes('meshes'), 'hint mentions meshing');
+});
+
+test('snap: a gear dropped overlapping another is pushed out to mesh', () => {
+  const b = emptyBuild(); addPart(b, 'gear-8', 0, 0);
+  const s = snapPart(b.parts, 'gear-24', 2.4, 0.4, 0);
+  near(Math.hypot(s.x, s.y), 3.2, 1e-9, 'centre distance');
+});
+
+test('snap: a gear near a motor snaps onto its shaft', () => {
+  const b = emptyBuild(); addPart(b, 'motor', 2, 2);
+  const s = snapPart(b.parts, 'gear-16', 2.3, 1.8, 0);
+  assert(s.x === 2 && s.y === 2 && s.hint === 'on motor shaft', JSON.stringify(s));
+});
+
+test('snap: a beam snaps its nearest hole onto a pin', () => {
+  const b = emptyBuild(); addPart(b, 'pin-rotating', 1.03, 1.02);
+  const s = snapPart(b.parts, 'beam-10', 2.9, 1.1, 0);   // holes every 0.4 from x-2..x+2
+  const holes = [-2, -1.6, -1.2, -0.8, -0.4, 0, 0.4, 0.8, 1.2, 1.6, 2].map((h) => s.x + h);
+  assert(holes.some((h) => Math.abs(h - 1.03) < 1e-9) && Math.abs(s.y - 1.02) < 1e-9, JSON.stringify(s));
+});
+
+test('snap: teeth of a meshed gear interleave (tooth faces gap)', () => {
+  const b = emptyBuild(); addPart(b, 'gear-12', 0, 0, 0.3);
+  const s = snapPart(b.parts, 'gear-12', 2.4, 0, 0);
+  // Tooth of A nearest the contact (angle 0): fA = frac((0 - 0.3) * 12 / 2π)
+  const fA = (((0 - 0.3) * 12) / (2 * Math.PI) % 1 + 1) % 1;
+  const fB = ((((Math.PI - s.angle) * 12) / (2 * Math.PI)) % 1 + 1) % 1;
+  near((fA + fB) % 1, 0.5, 1e-9, 'phase sum');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
