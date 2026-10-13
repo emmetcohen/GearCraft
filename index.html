@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GearCraft</title>
+  <meta name="description" content="A cartoony 2D physics sandbox for building machines out of gears, wheels, beams and motors.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚙️</text></svg>">
+  <!-- Rounded cartoon font. If it can't load (offline), we fall back to system fonts. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- ======================= TOP BAR: play / pause / reset ================== -->
+  <header id="topbar">
+    <div class="logo">⚙️ GEAR<span>CRAFT</span></div>
+    <div class="group">
+      <button id="btn-play" class="btn btn-go" title="Play (Space)">▶ Play</button>
+      <button id="btn-pause" class="btn" title="Pause (Space)" disabled>⏸ Pause</button>
+      <button id="btn-reset" class="btn btn-warn" title="Reset to your build (R while playing)" disabled>⟲ Reset</button>
+    </div>
+    <div class="group" id="edit-tools"></div>
+    <div class="spacer"></div>
+    <div id="mode-badge" class="badge">Sandbox</div>
+    <div id="status" class="status">Editing</div>
+  </header>
+
+  <!-- ======================= LEFT: parts gallery ============================ -->
+  <aside id="gallery" aria-label="Parts gallery"></aside>
+
+  <!-- ======================= CENTRE: the world ============================== -->
+  <main id="stage">
+    <canvas id="world"></canvas>
+    <div id="readout" class="readout" hidden></div>
+    <div id="toast" class="toast" hidden></div>
+    <div class="zoom-controls">
+      <button class="btn small" id="btn-zoom-in" title="Zoom in">＋</button>
+      <button class="btn small" id="btn-zoom-out" title="Zoom out">－</button>
+      <button class="btn small" id="btn-home" title="Recentre view (Home)">⌂</button>
+    </div>
+  </main>
+
+  <!-- ======================= RIGHT: tools & sliders ========================= -->
+  <aside id="panel" aria-label="Tools and settings"></aside>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
