@@ -50,7 +50,7 @@ export const EXAMPLES = [
   {
     name: 'Torque test',
     blurb: 'Same motor, same arm. Left: direct drive stalls. Right: a 2:1 reduction doubles torque and lifts it.',
-    camera: { x: 0, y: 8, zoom: 22 },
+    camera: { x: -2, y: 7, zoom: 18 },
     build: () => make([
       // Direct: 60 N·m motor vs ~77 N·m of arm → stall.
       ['motor', -13, 10], ['axle', -13, 10], ['beam-24', -8.2, 10],
