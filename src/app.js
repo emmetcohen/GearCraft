@@ -224,7 +224,9 @@ export class App {
   /** Parts as they currently are (live physics positions while playing). */
   livePart(part) {
     if (!this.sim) return part;
-    const t = this.sim.transformOf(part.uid);
+    // A crank's clickable arm is on its spinning hub, so use the hub's angle.
+    const layer = getDef(part.type).kind === 'crank' ? 'hub' : 'main';
+    const t = this.sim.transformOf(part.uid, layer);
     return t ? { ...part, x: t.x, y: t.y, angle: t.angle } : part;
   }
 
@@ -309,7 +311,7 @@ export class App {
       parts, mode: this.state === 'edit' ? 'edit' : 'play', map: this.mode.map,
       transformOf: (uid, layer) => this.transformOf(uid, layer),
       loadOf: (uid) => (this.options.loadView && this.sim ? this.sim.loadOf(uid) : null),
-      loadView: this.options.loadView,
+      loadView: this.options.loadView && !!this.sim, // load colours only mean something while running
       squashOf: (uid) => {
         const t0 = this.placedAt.get(uid);
         if (t0 == null) return 0;
