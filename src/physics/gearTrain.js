@@ -20,11 +20,16 @@
 // bolted to the background, that train is JAMMED: it simply doesn't move.
 // Parts never break.
 //
+// CHAINS link two sprockets (or gears) at any distance. They're edges too,
+// but the sign is + : both ends turn the SAME way.
+//     speed_out = +speed_in × (teeth_in / teeth_out)
+//
 // The physics layer (world.js) turns each graph edge into a Planck GearJoint
 // with exactly this ratio, so the physics engine then handles torque, load,
 // inertia and stalling for us.
 // =============================================================================
 import { gearCirclesOf } from '../parts/geometry.js';
+import { getDef, chainTeeth, chainRadius } from '../parts/partDefs.js';
 import { WORLD, mainKey } from './assembly.js';
 
 /** How close (world units) centre distance must be to r1 + r2 to count as meshed. */
@@ -47,13 +52,32 @@ export function findMeshes(parts) {
   return meshes;
 }
 
+/** All chains whose two ends still exist and can take a chain. */
+export function findChains(parts) {
+  const byUid = new Map(parts.map((p) => [p.uid, p]));
+  const out = [];
+  for (const p of parts) {
+    if (getDef(p.type).kind !== 'chain') continue;
+    const pa = byUid.get(p.props.a), pb = byUid.get(p.props.b);
+    if (!pa || !pb) continue;
+    const da = getDef(pa.type), db = getDef(pb.type);
+    if (!chainTeeth(da) || !chainTeeth(db)) continue;
+    out.push({
+      chain: true, uid: p.uid,
+      a: { uid: pa.uid, teeth: chainTeeth(da), r: chainRadius(da), x: pa.x, y: pa.y },
+      b: { uid: pb.uid, teeth: chainTeeth(db), r: chainRadius(db), x: pb.x, y: pb.y },
+    });
+  }
+  return out;
+}
+
 /**
  * Solve the gear train for a build.
  * @param parts     placed parts
  * @param assembly  result of buildAssembly(parts)
  */
 export function solveGearTrain(parts, assembly) {
-  const meshes = findMeshes(parts).map((m) => ({
+  const meshes = [...findMeshes(parts), ...findChains(parts)].map((m) => ({
     ...m,
     bodyA: assembly.bodyOf(mainKey(m.a.uid)),
     bodyB: assembly.bodyOf(mainKey(m.b.uid)),
@@ -83,8 +107,8 @@ export function solveGearTrain(parts, assembly) {
     }
     for (const [from, to, gFrom, gTo] of [[m.bodyA, m.bodyB, m.a, m.b], [m.bodyB, m.bodyA, m.b, m.a]]) {
       if (!adj.has(from)) adj.set(from, []);
-      // factor: speed(to) = factor × speed(from)
-      adj.get(from).push({ to, factor: -gFrom.teeth / gTo.teeth, mesh: m });
+      // factor: speed(to) = factor × speed(from). Meshes flip direction, chains don't.
+      adj.get(from).push({ to, factor: (m.chain ? 1 : -1) * gFrom.teeth / gTo.teeth, mesh: m });
     }
   }
 

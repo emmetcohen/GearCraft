@@ -16,11 +16,12 @@
 // down or stalls. Nothing ever breaks.
 // =============================================================================
 import * as planck from '../../lib/planck.mjs';
-import { getDef, gearLayers, roleOf } from '../parts/partDefs.js';
-import { buildAssembly, WORLD, mainKey, hubKey } from './assembly.js';
+import { getDef, partDef, gearLayers, roleOf } from '../parts/partDefs.js';
+import { socketsOf, lineEnds } from '../parts/geometry.js';
+import { buildAssembly, WORLD, mainKey, hubKey, CLUSTER_TOL } from './assembly.js';
 import { solveGearTrain } from './gearTrain.js';
 
-const { World, Vec2, Circle, Box, Polygon, RevoluteJoint, GearJoint, MouseJoint } = planck;
+const { World, Vec2, Circle, Box, Polygon, RevoluteJoint, GearJoint, MouseJoint, PrismaticJoint, DistanceJoint, RopeJoint } = planck;
 
 // Collision categories (bit flags). Machine parts don't collide with each
 // other — gears are connected by math, not by teeth bumping — but everything
@@ -47,6 +48,8 @@ const AXLE_FRICTION = 0.6;
 export const CRANK_TORQUE = 40;
 /** Torque used to hold jammed gears still. */
 const JAM_TORQUE = 1e6;
+/** Spring stiffness presets (oscillation frequency in Hz: higher = stiffer). */
+export const SPRING_HZ = { soft: 1.8, medium: 3.5, stiff: 7 };
 
 export class Simulation {
   /**
@@ -70,10 +73,14 @@ export class Simulation {
     this.driverJoints = new Map();// driver uid -> { joint, kind, part }
     this.telemetry = new Map();   // driver uid -> { torque, maxTorque, speed, load, stalled }
     this.fixtures = [];           // [{ fixture, baseFriction }]
+    this.links = new Map();       // spring/rope uid -> { bodyA, la, bodyB, lb, joint }
+    this.throttle = 0;            // -1..1 from the arrow keys, for key-driven motors
 
     this._createBodies(map);
     this._createRevolutes();
+    this._createPrismatics();
     this._createGearJoints();
+    this._createLinks();
     this.applySettings(settings);
 
     this.grab = null;        // mouse joint on a loose body
@@ -110,7 +117,7 @@ export class Simulation {
   /** Add the collision shapes for one element of a part. (lx, ly) = part
    *  position relative to the body origin. */
   _addPartFixtures(body, part, sub, lx, ly) {
-    const def = getDef(part.type);
+    const def = partDef(part);
     const a = part.angle;
     const c = Vec2(lx, ly);
     const at = (dx, dy) => Vec2(lx + dx * Math.cos(a) - dy * Math.sin(a), ly + dx * Math.sin(a) + dy * Math.cos(a));
@@ -127,11 +134,24 @@ export class Simulation {
         add(Circle(c, def.radius), Math.PI * def.radius ** 2,
           { cat: CAT.WHEEL, friction: 1.6, restitution: 0.05 });
         break;
+      case 'sprocket':
+        add(Circle(c, def.radius), Math.PI * def.radius ** 2, { cat: CAT.MACHINE, friction: 0.4 });
+        break;
       case 'beam': {
         const hx = def.length / 2 + def.thickness / 2, hy = def.thickness / 2;
         add(Box(hx, hy, c, a), 4 * hx * hy, { cat: CAT.MACHINE, friction: 0.5 });
         break;
       }
+      case 'slider':
+        if (sub === 'hub') add(Box(0.36, 0.3, c, a), 0.43, { cat: CAT.MACHINE, sensor: true, density: 1.5 });
+        else {
+          const hx = def.length / 2 + 0.2, hy = 0.14;
+          add(Box(hx, hy, c, a), 4 * hx * hy, { cat: CAT.MACHINE, friction: 0.5 });
+        }
+        break;
+      case 'track':
+        this._addFixture(body, Box(def.length / 2 + 0.05, def.thickness / 2, c, a), { cat: CAT.GROUND, friction: 1 });
+        break;
       case 'motor':
         if (sub === 'hub') add(Circle(c, 0.18), 0.1, { cat: CAT.MACHINE, sensor: true, density: 2 });
         else add(Box(def.housing / 2, def.housing / 2, c, a), def.housing ** 2, { cat: CAT.MACHINE });
@@ -180,6 +200,11 @@ export class Simulation {
     for (const r of this.assembly.revolutes) {
       const bodyA = this.bodies.get(r.a);
       const bodyB = this.bodies.get(r.b);
+      if (r.pivot) {
+        // Crank pins and slider blocks: a plain free pivot.
+        this.world.createJoint(RevoluteJoint({}, bodyA, bodyB, Vec2(r.x, r.y)));
+        continue;
+      }
       const joint = this.world.createJoint(RevoluteJoint(
         { enableMotor: true, motorSpeed: 0, maxMotorTorque: 0 }, bodyA, bodyB, Vec2(r.x, r.y)));
       if (!this.axleJoints.has(r.b)) this.axleJoints.set(r.b, joint);
@@ -191,6 +216,77 @@ export class Simulation {
         this.telemetry.set(r.driverUid, { torque: 0, maxTorque: 0, speed: 0, commanded: 0, load: 0, stalled: false, jammed: false });
       }
     }
+  }
+
+  /** Slider blocks slide along their rails, stopping at the ends. */
+  _createPrismatics() {
+    for (const pr of this.assembly.prismatics) {
+      const part = this.byUid.get(pr.uid);
+      const def = partDef(part);
+      const axis = Vec2(Math.cos(part.angle), Math.sin(part.angle));
+      const half = def.length / 2 - 0.36;
+      this.world.createJoint(PrismaticJoint({
+        enableLimit: true, lowerTranslation: -half, upperTranslation: half,
+        enableMotor: true, maxMotorForce: AXLE_FRICTION * 2, motorSpeed: 0,
+      }, this.bodies.get(pr.a), this.bodies.get(pr.b), Vec2(part.x, part.y), axis));
+    }
+  }
+
+  /** The body under a world point: a part with a socket there first, then
+   *  any shape there (crates, beams...), otherwise the background. */
+  _bodyAt(pt) {
+    for (const part of this.parts) {
+      for (const s of socketsOf(part)) {
+        if (Math.hypot(s.x - pt.x, s.y - pt.y) >= CLUSTER_TOL) continue;
+        const key = s.sub === 'hub' ? hubKey(part.uid) : mainKey(part.uid);
+        const id = this.assembly.bodyOf(key);
+        if (this.bodies.has(id)) return this.bodies.get(id);
+      }
+    }
+    // A little tolerance, so an end drawn right on a crate's edge still grabs it.
+    const probes = [[0, 0], [0, -0.12], [0, 0.12], [-0.12, 0], [0.12, 0]];
+    for (const [dx, dy] of probes) {
+      const q = Vec2(pt.x + dx, pt.y + dy);
+      let found = null;
+      this.world.queryAABB(planck.AABB(Vec2(q.x - 0.01, q.y - 0.01), Vec2(q.x + 0.01, q.y + 0.01)), (f) => {
+        if (f.getBody().isDynamic() && f.testPoint(q)) { found = f.getBody(); return false; }
+        return true;
+      });
+      if (found) return found;
+    }
+    return this.ground;
+  }
+
+  /** Springs and ropes: each end grabs whatever it touches. */
+  _createLinks() {
+    for (const part of this.parts) {
+      const def = partDef(part);
+      if (def.kind !== 'spring' && def.kind !== 'rope') continue;
+      const [e1, e2] = lineEnds(part);
+      const bodyA = this._bodyAt(e1), bodyB = this._bodyAt(e2);
+      const link = { bodyA, la: bodyA.getLocalPoint(Vec2(e1.x, e1.y)), bodyB, lb: bodyB.getLocalPoint(Vec2(e2.x, e2.y)), joint: null };
+      this.links.set(part.uid, link);
+      if (bodyA === bodyB) continue;
+      if (def.kind === 'spring') {
+        const hz = SPRING_HZ[part.props.stiffness] ?? SPRING_HZ.medium;
+        link.joint = this.world.createJoint(DistanceJoint(
+          { frequencyHz: hz, dampingRatio: 0.35, length: def.length, collideConnected: true },
+          bodyA, bodyB, Vec2(e1.x, e1.y), Vec2(e2.x, e2.y)));
+      } else {
+        link.joint = this.world.createJoint(RopeJoint(
+          { maxLength: def.length, localAnchorA: link.la, localAnchorB: link.lb, collideConnected: true }, bodyA, bodyB));
+      }
+      bodyA.setSleepingAllowed(false);
+      bodyB.setSleepingAllowed(false);
+    }
+  }
+
+  /** Current world positions of a spring's or rope's two ends. */
+  linkEnds(uid) {
+    const l = this.links.get(uid);
+    if (!l) return null;
+    const a = l.bodyA.getWorldPoint(l.la), b = l.bodyB.getWorldPoint(l.lb);
+    return [{ x: a.x, y: a.y }, { x: b.x, y: b.y }];
   }
 
   _createGearJoints() {
@@ -211,8 +307,8 @@ export class Simulation {
       const j1 = this.axleJoints.get(m.bodyA);
       const j2 = this.axleJoints.get(m.bodyB);
       // GearJoint constraint: angleA + ratio·angleB = const. For meshed gears
-      // ωB = −ωA·(Na/Nb) ⇒ ratio = Nb/Na.
-      const ratio = m.b.teeth / m.a.teeth;
+      // ωB = −ωA·(Na/Nb) ⇒ ratio = Nb/Na. A chain keeps the direction ⇒ −Nb/Na.
+      const ratio = (m.chain ? -1 : 1) * m.b.teeth / m.a.teeth;
       const gj = this.world.createJoint(GearJoint({}, j1.getBodyB(), j2.getBodyB(), j1, j2, ratio));
       this.gearJoints.push(gj);
     }
@@ -242,13 +338,34 @@ export class Simulation {
     }
     for (const [uid, d] of this.driverJoints) {
       if (this.jammedBodies.has(d.bodyId)) continue; // jammed trains stay locked
-      if (d.kind === 'motor') {
-        const dir = d.part.props.reverse ? -1 : 1;
-        d.joint.setMotorSpeed(dir * rpmToRad(settings.motorRpm));
-        d.joint.setMaxMotorTorque(settings.motorTorque);
-      }
+      if (d.kind === 'motor') this._driveMotor(d);
     }
     for (const b of this.bodies.values()) b.setAwake(true);
+  }
+
+  _driveMotor(d) {
+    const dir = d.part.props.reverse ? -1 : 1;
+    // Key-driven motors: → turns clockwise (rolls a car right), ← back,
+    // no key = hold still (a brake).
+    const amount = d.part.props.keys ? -this.throttle : 1;
+    d.joint.setMotorSpeed(dir * amount * rpmToRad(this.settings.motorRpm));
+    d.joint.setMaxMotorTorque(this.settings.motorTorque);
+  }
+
+  /** Arrow-key input for key-driven motors: -1 (←), 0 or 1 (→). */
+  setThrottle(v) {
+    if (v === this.throttle) return;
+    this.throttle = v;
+    for (const d of this.driverJoints.values()) {
+      if (d.kind !== 'motor' || !d.part.props.keys || this.jammedBodies.has(d.bodyId)) continue;
+      this._driveMotor(d);
+      d.joint.getBodyB().setAwake(true);
+    }
+  }
+
+  /** Does this machine have any arrow-key motors? */
+  get hasKeyMotors() {
+    return [...this.driverJoints.values()].some((d) => d.kind === 'motor' && d.part.props.keys);
   }
 
   // ---------------------------------------------------------------- input --

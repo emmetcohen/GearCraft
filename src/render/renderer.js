@@ -4,9 +4,9 @@
 // The renderer is "dumb": every frame the app hands it a SCENE object
 // describing what to draw. It never changes game state.
 // =============================================================================
-import { getDef, OUTLINE, roleOf } from '../parts/partDefs.js';
-import { outerRadius } from '../parts/geometry.js';
-import { drawPart, hasHub } from './draw.js';
+import { getDef, partDef, OUTLINE, roleOf, chainRadius } from '../parts/partDefs.js';
+import { outerRadius, socketsOf, lineEnds, lineFrom } from '../parts/geometry.js';
+import { drawPart, hasHub, drawChain, ropeStroke } from './draw.js';
 
 /** Camera: world point (x, y) at the canvas centre, `zoom` pixels per unit. */
 export class Camera {
@@ -29,7 +29,10 @@ export class Camera {
 
 /** Draw order: lower numbers are drawn first (further back). */
 function layerOf(def) {
-  if (def.kind === 'ramp' || def.kind === 'block') return 0;
+  if (def.kind === 'ramp' || def.kind === 'block' || def.kind === 'track') return 0;
+  if (def.kind === 'chain') return 4;
+  if (def.kind === 'slider') return 1.5; // rail sits on top of the beam it's bolted to
+  if (def.kind === 'spring' || def.kind === 'rope') return 5.5;
   if (roleOf(def.kind) === 'beam') return 1;
   if (roleOf(def.kind) === 'driver') return 2;
   if (roleOf(def.kind) === 'rotor') return 3;
@@ -60,10 +63,15 @@ export class Renderer {
     this._background(scene);
 
     const px = camera.zoom;
-    const parts = [...scene.parts].map((p, i) => ({ p, i, def: getDef(p.type) }))
-      .sort((a, b) => layerOf(a.def) - layerOf(b.def) || a.i - b.i);
+    // Same layer: bigger rotors first, so a small gear stacked on a big one shows on top.
+    const size = (def) => (roleOf(def.kind) === 'rotor' ? -outerRadius(def) : 0);
+    const parts = [...scene.parts].map((p, i) => ({ p, i, def: partDef(p) }))
+      .sort((a, b) => layerOf(a.def) - layerOf(b.def) || size(a.def) - size(b.def) || a.i - b.i);
+    const byUid = new Map(scene.parts.map((p) => [p.uid, p]));
 
     const drawOne = (p, def, layer) => {
+      if (def.kind === 'chain') return this._chain(scene, p, byUid);
+      if (def.kind === 'spring' || def.kind === 'rope') return this._link(scene, p, def);
       const t = scene.transformOf(p.uid, layer);
       if (!t) return;
       const s = camera.worldToScreen(t.x, t.y);
@@ -72,10 +80,45 @@ export class Renderer {
       });
     };
     for (const { p, def } of parts) drawOne(p, def, 'main');
-    // Spinning hubs (motor shafts, crank handles) go above the rotors.
+    // Spinning hubs (motor shafts, crank handles, slider blocks) go above the rotors.
     for (const { p, def } of parts) if (hasHub(def.kind)) drawOne(p, def, 'hub');
 
     this._overlays(scene);
+  }
+
+  /** A chain wrapped round two sprockets/gears, at their live positions. */
+  _chain(scene, part, byUid) {
+    const pa = byUid.get(part.props.a), pb = byUid.get(part.props.b);
+    if (!pa || !pb) return;
+    const ta = scene.transformOf(pa.uid), tb = scene.transformOf(pb.uid);
+    if (!ta || !tb) return;
+    const z = this.camera.zoom;
+    const ra = (chainRadius(getDef(pa.type)) + 0.05) * z, rb = (chainRadius(getDef(pb.type)) + 0.05) * z;
+    const sa = this.camera.worldToScreen(ta.x, ta.y), sb = this.camera.worldToScreen(tb.x, tb.y);
+    const state = scene.selectedUid === part.uid ? 'selected' : scene.badChains?.has(part.uid) ? 'bad' : 'ok';
+    // Links travel with sprocket A's rotation (screen y is flipped, hence +).
+    drawChain(this.ctx, { x: sa.x, y: sa.y, r: ra }, { x: sb.x, y: sb.y, r: rb }, ta.angle * ra, state);
+  }
+
+  /** A spring or rope between its two (live) ends. */
+  _link(scene, part, def) {
+    const ends = scene.linkEndsOf(part.uid) || lineEnds(part);
+    const [a, b] = ends;
+    const cur = lineFrom(a, b);
+    const { ctx, camera } = this;
+    const px = camera.zoom;
+    if (def.kind === 'rope' && cur.length < def.length - 0.02) {
+      // Slack rope: sag in the middle by about how much spare length there is.
+      const sag = Math.sqrt(Math.max(0, def.length ** 2 - cur.length ** 2)) / 2;
+      const sa = camera.worldToScreen(a.x, a.y), sb = camera.worldToScreen(b.x, b.y);
+      const m = camera.worldToScreen(cur.x, cur.y - sag * 1.6);
+      ctx.save();
+      ropeStroke(ctx, 1, def.color, (c) => { c.moveTo(sa.x, sa.y); c.quadraticCurveTo(m.x, m.y, sb.x, sb.y); });
+      ctx.restore();
+      return;
+    }
+    const s = camera.worldToScreen(cur.x, cur.y);
+    drawPart(ctx, { ...def, length: Math.max(0.05, cur.length) }, { sx: s.x, sy: s.y, angle: cur.angle }, px, {});
   }
 
   _background(scene) {
@@ -103,7 +146,7 @@ export class Renderer {
       }
       ctx.stroke();
     };
-    if (camera.zoom > 28 && scene.mode === 'edit') drawGrid(0.4, 'rgba(43,33,64,0.05)', 1);
+    if (camera.zoom > 28 && scene.mode === 'edit' && scene.grid !== false) drawGrid(0.4, 'rgba(43,33,64,0.05)', 1);
     drawGrid(2, 'rgba(43,33,64,0.09)', 1);
 
     // Ground: grass strip on dirt, top at y = 0, out to ±halfWidth.
@@ -134,9 +177,55 @@ export class Renderer {
     const { ctx, camera } = this;
     const px = camera.zoom;
 
+    // Snap points (while placing/drawing): every socket you could attach to.
+    if (scene.showSockets) {
+      ctx.save();
+      for (const p of scene.parts) {
+        for (const so of socketsOf(p)) {
+          const s = camera.worldToScreen(so.x, so.y);
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, so.pivot ? 5 : 3.5, 0, Math.PI * 2);
+          ctx.fillStyle = so.pivot ? 'rgba(255,224,102,0.95)' : 'rgba(255,255,255,0.9)';
+          ctx.fill();
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = 'rgba(43,33,64,0.6)';
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+
+    // Spring/rope ends that hang on the background.
+    for (const e of scene.skyPins || []) {
+      const s = camera.worldToScreen(e.x, e.y);
+      drawPart(ctx, getDef('pin-fixed'), { sx: s.x, sy: s.y, angle: 0 }, Math.max(px, 30) * 0.7, {});
+    }
+
+    // Joint markers (edit mode): what each shared point does.
+    //   bolt (dark square) = bolted solid · ring = spins freely · yellow = motor/crank drives it
+    if (scene.mode === 'edit' && scene.joints && px > 14) {
+      for (const j of scene.joints) {
+        const s = camera.worldToScreen(j.x, j.y);
+        ctx.save();
+        ctx.translate(s.x + 9, s.y - 9);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = OUTLINE;
+        if (j.type === 'weld') {
+          ctx.fillStyle = '#5c5470';
+          ctx.beginPath(); ctx.roundRect(-4, -4, 8, 8, 2); ctx.fill(); ctx.stroke();
+        } else {
+          ctx.fillStyle = j.type === 'drive' ? '#ffd23f' : '#ffffff';
+          ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          ctx.beginPath(); ctx.arc(0, 0, 2.2, 0.3, Math.PI * 1.6); ctx.lineWidth = 1.5; ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
     // Mesh contact markers (edit mode) — shows which gears are engaged.
     if (scene.mode === 'edit') {
       for (const m of scene.meshes) {
+        if (m.chain) continue;
         const s = camera.worldToScreen(m.contact.x, m.contact.y);
         const bad = m.status !== 'ok' || m.jammed;
         ctx.beginPath();
@@ -149,41 +238,87 @@ export class Renderer {
       }
     }
 
-    // Selection ring.
-    const sel = scene.selectedUid != null ? scene.parts.find((p) => p.uid === scene.selectedUid) : null;
-    if (sel) {
-      const def = getDef(sel.type);
-      const t = scene.transformOf(sel.uid, 'main');
+    // Hover + selection rings.
+    const ring = (uid, style) => {
+      const part = uid != null ? scene.parts.find((p) => p.uid === uid) : null;
+      if (!part) return;
+      const def = partDef(part);
+      if (def.kind === 'chain') return; // chains highlight themselves
+      let t = scene.transformOf(part.uid, 'main');
+      let len = def.length;
+      if (def.kind === 'spring' || def.kind === 'rope') {
+        const ends = scene.linkEndsOf(part.uid);
+        if (ends) { const l = lineFrom(ends[0], ends[1]); t = l; len = l.length; }
+      }
+      if (!t) return;
       const s = camera.worldToScreen(t.x, t.y);
       ctx.save();
-      ctx.setLineDash([6, 5]);
-      ctx.lineDashOffset = -performance.now() / 40; // marching ants
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = '#ff006e';
-      if (def.kind === 'beam' || def.kind === 'crate' || def.kind === 'block' || def.kind === 'ramp') {
-        const w = (def.length ?? def.width) + (def.thickness ?? 0) + 0.3;
-        const h = (def.thickness ?? def.height) + 0.3;
+      style();
+      if (def.drawn || def.kind === 'beam' || def.kind === 'crate' || def.kind === 'block' || def.kind === 'ramp') {
+        const w = (len ?? def.width) + (def.thickness ?? 0) + 0.3;
+        const h = Math.max(def.thickness ?? def.height, 0.3) + 0.3;
         ctx.translate(s.x, s.y);
         ctx.rotate(-t.angle);
-        ctx.strokeRect((-w / 2) * px, (-h / 2) * px, w * px, h * px);
+        ctx.beginPath();
+        ctx.roundRect((-w / 2) * px, (-h / 2) * px, w * px, h * px, Math.min(12, (h / 2) * px));
+        ctx.stroke();
       } else {
         ctx.beginPath();
         ctx.arc(s.x, s.y, (outerRadius(def) + 0.15) * px, 0, Math.PI * 2);
         ctx.stroke();
       }
       ctx.restore();
+    };
+    if (scene.hoverUid !== scene.selectedUid) {
+      ring(scene.hoverUid, () => { ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,0,110,0.35)'; });
+    }
+    ring(scene.selectedUid, () => {
+      ctx.setLineDash([6, 5]);
+      ctx.lineDashOffset = -performance.now() / 40; // marching ants
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#ff006e';
+    });
+    // Chain tool: the first sprocket you picked.
+    ring(scene.pickedUid, () => { ctx.lineWidth = 4; ctx.strokeStyle = '#ffd23f'; });
+
+    // Stretch handles on a selected drawn part (beam, spring, rope, slider, track).
+    for (const h of scene.handles || []) {
+      const s = camera.worldToScreen(h.x, h.y);
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 7, 0, Math.PI * 2);
+      ctx.fillStyle = '#ff006e';
+      ctx.fill();
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
     }
 
     // Placement ghost + snap hint.
     if (scene.ghost) {
       const g = scene.ghost;
-      const def = getDef(g.type);
+      const def = g.length != null ? partDef({ type: g.type, props: { length: g.length } }) : getDef(g.type);
       const s = camera.worldToScreen(g.x, g.y);
       if (!g.hintOnly) drawPart(ctx, def, { sx: s.x, sy: s.y, angle: g.angle }, px, { ghost: true });
-      if (!g.hintOnly && (def.kind === 'motor' || def.kind === 'crank')) {
+      if (!g.hintOnly && hasHub(def.kind)) {
         drawPart(ctx, def, { sx: s.x, sy: s.y, angle: g.angle }, px, { ghost: true, layer: 'hub' });
       }
-      if (g.hint) this._bubble(s.x, s.y - (outerRadius(def) * px + 22), `✨ ${g.hint}`, '#ffffff');
+      if (g.label) {
+        const e = camera.worldToScreen(g.labelAt.x, g.labelAt.y);
+        this._bubble(e.x, e.y - 22, g.label, '#ffffff');
+      }
+      const r = def.drawn ? 0.4 : outerRadius(def);
+      if (g.hint) this._bubble(s.x, s.y - (r * px + 22), `✨ ${g.hint}`, '#ffffff');
+    }
+    // A drawing tool's start point, before you drag.
+    if (scene.drawStart) {
+      const s = camera.worldToScreen(scene.drawStart.x, scene.drawStart.y);
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 6, 0, Math.PI * 2);
+      ctx.fillStyle = scene.drawStart.attached ? '#ffd23f' : '#ffffff';
+      ctx.fill();
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = OUTLINE;
+      ctx.stroke();
     }
 
     // Floating labels (STALLED / JAMMED / "no axle!").

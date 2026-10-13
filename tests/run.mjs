@@ -7,7 +7,9 @@ import { Simulation, radToRpm, DT } from '../src/physics/world.js';
 import { EXAMPLES } from '../src/save/examples.js';
 import { toFile, fromFile } from '../src/save/storage.js';
 import { findMeshes } from '../src/physics/gearTrain.js';
-import { snapPart } from '../src/parts/snap.js';
+import { snapPart, snapDrawEnd } from '../src/parts/snap.js';
+import { socketsOf } from '../src/parts/geometry.js';
+import { partDef } from '../src/parts/partDefs.js';
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -299,6 +301,139 @@ test('snap: teeth of a meshed gear interleave (tooth faces gap)', () => {
   const fA = (((0 - 0.3) * 12) / (2 * Math.PI) % 1 + 1) % 1;
   const fB = ((((Math.PI - s.angle) * 12) / (2 * Math.PI)) % 1 + 1) % 1;
   near((fA + fB) % 1, 0.5, 1e-9, 'phase sum');
+});
+
+
+console.log('\nNew parts — drawn beams, chains, crank pins, sliders, springs, ropes');
+
+test('drawn beam: any length, a hole at both ends, mass scales with length', () => {
+  const b = emptyBuild();
+  const beam = addPart(b, 'beam', 0, 0, 0, { length: 3.0 });
+  const holes = socketsOf(beam);
+  near(holes[0].x, -1.5, 1e-9, 'left end hole');
+  near(holes[holes.length - 1].x, 1.5, 1e-9, 'right end hole');
+  near(partDef(beam).mass, 0.17 * 3, 1e-9, 'mass');
+});
+
+test('draw snapping: the far end of a beam lands exactly on a pin', () => {
+  const b = emptyBuild(); addPart(b, 'pin-rotating', 3.1, 2.2);
+  const e = snapDrawEnd(b.parts, 'beam', { x: 0, y: 0 }, { x: 3, y: 2.3 });
+  assert(e.attached && e.x === 3.1 && e.y === 2.2, JSON.stringify(e));
+});
+
+/** Two sprockets on pins linked by a chain. */
+function chainBuild(nA = 'sprocket-10', nB = 'sprocket-24') {
+  const b = emptyBuild();
+  addPart(b, 'motor', 0, 4); const a = addPart(b, nA, 0, 4);
+  addPart(b, 'pin-rotating', 6, 4); const c = addPart(b, nB, 6, 4);
+  addPart(b, 'chain', 3, 4, 0, { a: a.uid, b: c.uid });
+  return { b, a, c };
+}
+
+test('chain: 10T → 24T turns the same way at 10/24 speed', () => {
+  const { b, c } = chainBuild();
+  near(driveRatio(b, c.uid).ratio, 10 / 24, 1e-9, 'ratio');
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 2);
+  near(sim.readout(c.uid).rpm, 30 * 10 / 24, 0.5, 'output RPM');
+});
+
+test('chain: a chain fighting a gear mesh jams', () => {
+  const b = emptyBuild();
+  addPart(b, 'motor', 0, 4); const a = addPart(b, 'gear-12', 0, 4);
+  addPart(b, 'pin-rotating', 2.4, 4); const g = addPart(b, 'gear-12', 2.4, 4);
+  addPart(b, 'chain', 1.2, 4, 0, { a: a.uid, b: g.uid });
+  assert(driveRatio(b, g.uid).jammed, 'mesh flips direction, chain does not: jam');
+});
+
+test('chain: a deleted sprocket leaves the chain harmless', () => {
+  const { b, c } = chainBuild();
+  b.parts = b.parts.filter((p) => p.uid !== c.uid);
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 0.2);
+});
+
+/** A locomotive frame: two drive wheels on a beam, linked by a side rod on their crank pins. */
+function locoBuild() {
+  const b = emptyBuild();
+  const frame = addPart(b, 'beam', 0, 0.8, 0, { length: 4 });
+  addPart(b, 'motor', -2, 0.8, 0, { reverse: true });
+  // Crank pins 0.6 right of each centre: the rod runs right along the
+  // frame, but its holes fall between the frame's, so it stays free.
+  const w1 = addPart(b, 'drive-wheel-s', -2, 0.8);
+  const w2 = addPart(b, 'drive-wheel-s', 2, 0.8);
+  const rod = addPart(b, 'beam', 0.6, 0.8, 0, { length: 4 });
+  return { b, frame, w1, w2, rod };
+}
+
+test('crank pins: the side rod pivots on both wheels (no welds, no warnings)', () => {
+  const { b, w1, w2, rod } = locoBuild();
+  const asm = buildAssembly(b.parts);
+  assert(asm.warnings.length === 0, asm.warnings.join('; '));
+  const pivots = asm.revolutes.filter((r) => r.pivot);
+  assert(pivots.length === 2, `expected 2 crank-pin pivots, got ${pivots.length}`);
+  assert(asm.bodyOf(mainKey(rod.uid)) !== asm.bodyOf(mainKey(w1.uid)), 'rod is its own body');
+  assert(asm.axleOf(asm.bodyOf(mainKey(w2.uid))), 'the front wheel still spins on its centre');
+});
+
+test('crank pins: a side-rod loco drives along and the unpowered wheel keeps up', () => {
+  const { b, frame, w1, w2 } = locoBuild();
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 4);
+  const t = sim.transformOf(frame.uid);
+  assert(t.x > 2, `loco should drive right, x = ${t.x.toFixed(2)}`);
+  near(sim.readout(w2.uid).rpm, sim.readout(w1.uid).rpm, 2, 'both wheels turn together');
+});
+
+test('slider: a crank pin drives a slider block back and forth (piston)', () => {
+  const b = emptyBuild();
+  addPart(b, 'motor', 0, 4); addPart(b, 'drive-wheel-l', 0, 4);    // pin at (1, 4)
+  const sl = addPart(b, 'slider', 5, 4, 0, { length: 6.4 });        // block at (5, 4), rail ends 1.8 & 8.2
+  addPart(b, 'beam', 3, 4, 0, { length: 4 });                       // rod from pin to block: a rod hole sits on the rail's end hole
+  const asm = buildAssembly(b.parts);
+  assert(asm.prismatics.length === 1, 'one prismatic joint');
+  assert(asm.bodyOf(mainKey(sl.uid)) === WORLD, 'a free rail is bolted down');
+  const sim = new Simulation(b, SETTINGS, MAP);
+  let lo = Infinity, hi = -Infinity;
+  for (let t = 0; t < 3; t += DT) { sim.step(); const x = sim.transformOf(sl.uid, 'hub').x; lo = Math.min(lo, x); hi = Math.max(hi, x); }
+  near(hi - lo, 2.0, 0.15, 'piston stroke = 2 × crank radius');
+});
+
+test('spring: a crate hanging on a spring bobs and settles below its rest length', () => {
+  const b = emptyBuild();
+  addPart(b, 'spring', 0, 7, -Math.PI / 2, { length: 2 });          // from (0,8) down to (0,6)
+  const crate = addPart(b, 'crate', 0, 5.6);                        // top edge at y = 6.2
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 4);
+  const y = sim.transformOf(crate.uid).y;
+  assert(y < 5.6 && y > 3, `crate should sag a bit on the spring, y = ${y.toFixed(2)}`);
+  const ends = sim.linkEnds(b.parts[0].uid);
+  near(ends[0].y, 8, 1e-6, 'top end anchored in the air');
+});
+
+test('rope: a crate hangs from a pinned beam and never drops further than the rope', () => {
+  const b = emptyBuild();
+  addPart(b, 'beam', 0, 8, 0, { length: 4 }); addPart(b, 'pin-fixed', -2, 8); addPart(b, 'pin-fixed', 2, 8);
+  addPart(b, 'rope', 0, 6.5, -Math.PI / 2, { length: 3 });          // (0,8) to (0,5)
+  const crate = addPart(b, 'crate', 0, 4.8);
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 3);
+  const y = sim.transformOf(crate.uid).y;
+  near(y, 4.8, 0.1, 'crate hangs at the rope length');
+});
+
+test('arrow-key motor: holds still until you press →, then drives right', () => {
+  const { b, chassis } = carBuild();
+  b.parts.find((p) => p.type === 'motor').props.keys = true;
+  const sim = new Simulation(b, SETTINGS, MAP);
+  assert(sim.hasKeyMotors, 'detects key motors');
+  run(sim, 1);
+  near(sim.transformOf(chassis.uid).x, 0, 0.2, 'no keys = parked');
+  sim.setThrottle(1); run(sim, 2);
+  assert(sim.transformOf(chassis.uid).x > 1.5, `→ drives right, x = ${sim.transformOf(chassis.uid).x.toFixed(2)}`);
+});
+
+test('track: wheels roll on drawn track laid above the ground', () => {
+  const b = emptyBuild();
+  addPart(b, 'track', 0, 3, 0, { length: 12 });
+  const ball = addPart(b, 'ball-s', 0, 4);
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1);
+  near(sim.transformOf(ball.uid).y, 3.15 + 0.5, 0.05, 'ball rests on the track');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

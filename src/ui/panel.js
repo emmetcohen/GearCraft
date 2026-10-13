@@ -13,7 +13,7 @@ export class Panel {
   }
 
   /** Add a titled box; returns its element so you can append controls. */
-  section(title, { id } = {}) {
+  section(title, { id, collapsible = false } = {}) {
     const s = document.createElement('section');
     s.className = 'section';
     if (id) s.id = id;
@@ -21,9 +21,33 @@ export class Panel {
       const h = document.createElement('h3');
       h.textContent = title;
       s.appendChild(h);
+      if (collapsible) {
+        s.classList.add('collapsible');
+        h.tabIndex = 0;
+        h.addEventListener('click', () => s.classList.toggle('collapsed'));
+      }
     }
     this.root.appendChild(s);
     return s;
+  }
+
+  /** A row of mutually exclusive buttons: options = [[value, label], ...]. */
+  choice(parent, { label, value, options, onChange }) {
+    const wrap = document.createElement('div');
+    wrap.className = 'choice';
+    wrap.innerHTML = `<span>${label}</span>`;
+    const row = document.createElement('div');
+    row.className = 'seg';
+    for (const [v, text] of options) {
+      const b = document.createElement('button');
+      b.className = `seg-btn${v === value ? ' on' : ''}`;
+      b.textContent = text;
+      b.addEventListener('click', () => onChange(v));
+      row.appendChild(b);
+    }
+    wrap.appendChild(row);
+    parent.appendChild(wrap);
+    return wrap;
   }
 
   /**

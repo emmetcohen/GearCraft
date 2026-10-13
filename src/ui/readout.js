@@ -9,8 +9,9 @@ const fmt = (v, d = 1) => (Number.isFinite(v) ? v.toFixed(d) : '—');
  * @param el    the readout <div>
  * @param info  null to hide, or { name, rpm, torque, ratio, load, note, live }
  * @param pos   { x, y } screen position to sit beside
+ * @param r     the part's radius on screen (px), so the card sits clear of it
  */
-export function showReadout(el, info, pos) {
+export function showReadout(el, info, pos, r = 0) {
   if (!info) { el.hidden = true; return; }
   el.hidden = false;
   const rows = [];
@@ -30,8 +31,11 @@ export function showReadout(el, info, pos) {
   // Keep the card inside the stage.
   const parent = el.parentElement.getBoundingClientRect();
   const w = el.offsetWidth, h = el.offsetHeight;
-  let x = pos.x + 24, y = pos.y - h / 2;
-  if (x + w > parent.width - 8) x = pos.x - w - 24;
+  // Above the part (machines are mostly built sideways, so this covers the
+  // least), or below it if there's no room.
+  const gap = Math.min(r, 160) + 12;
+  let x = pos.x - w / 2, y = pos.y - gap - h;
+  if (y < 8) y = pos.y + gap;
   x = Math.max(8, Math.min(parent.width - w - 8, x));
   y = Math.max(8, Math.min(parent.height - h - 8, y));
   el.style.left = `${x}px`;

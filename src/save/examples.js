@@ -23,11 +23,12 @@ function make(list) {
 export const EXAMPLES = [
   {
     name: 'Gear train',
-    blurb: 'Motor → 12T → compound 24/12 → 24T → 8T. Select gears to compare RPM & torque.',
+    blurb: 'Motor → 12T → (24T stacked on 12T) → 24T → 8T. Click gears to compare RPM & torque.',
     camera: { x: -1, y: 7, zoom: 30 },
     build: () => make([
       ['motor', -6, 6], ['gear-12', -6, 6],
-      ['pin-rotating', -2.4, 6], ['compound-24-12', -2.4, 6],
+      // Two gears stacked on one pin turn together (a compound gear).
+      ['pin-rotating', -2.4, 6], ['gear-24', -2.4, 6], ['gear-12', -2.4, 6],
       ['pin-rotating', -2.4, 9.6], ['gear-24', -2.4, 9.6],
       ['pin-rotating', 0.8, 9.6], ['gear-8', 0.8, 9.6],
       // 8T → 16T (idler) → 16T: the idler flips direction back again.
@@ -37,10 +38,10 @@ export const EXAMPLES = [
   },
   {
     name: 'Little car',
-    blurb: 'A motor riding on a beam drives the back wheel. Watch it climb the ramp.',
+    blurb: 'A motor riding on a beam drives the back wheel. Watch it climb the ramp. (Click the motor and tick "Drive with ← / →" to steer it yourself.)',
     camera: { x: 6, y: 4, zoom: 26 },
     build: () => make([
-      ['beam-16', 0, 1.6],
+      ['beam', 0, 1.6, 0, { length: 6.4 }],
       ['motor', -3.2, 1.6, 0, { reverse: true }], ['wheel-l', -3.2, 1.6],
       ['wheel-l', 3.2, 1.6],
       ['ramp-s', 13, 1],
@@ -53,10 +54,10 @@ export const EXAMPLES = [
     camera: { x: -2, y: 7, zoom: 18 },
     build: () => make([
       // Direct: 60 N·m motor vs ~77 N·m of arm → stall.
-      ['motor', -13, 10], ['axle', -13, 10], ['beam-24', -8.2, 10],
+      ['motor', -13, 10], ['axle', -13, 10], ['beam', -8.2, 10, 0, { length: 9.6 }],
       // Geared: 12T → 24T gives 120 N·m at the arm → lifts.
       ['motor', 0, 10, 0, { reverse: true }], ['gear-12', 0, 10],
-      ['pin-rotating', 3.6, 10], ['gear-24', 3.6, 10], ['axle', 3.6, 10], ['beam-24', 8.4, 10],
+      ['pin-rotating', 3.6, 10], ['gear-24', 3.6, 10], ['axle', 3.6, 10], ['beam', 8.4, 10, 0, { length: 9.6 }],
     ]),
   },
   {
@@ -65,7 +66,7 @@ export const EXAMPLES = [
     camera: { x: 3, y: 5, zoom: 32 },
     build: () => make([
       ['crank', 0, 5], ['gear-12', 0, 5],
-      ['pin-rotating', 4.4, 5], ['gear-32', 4.4, 5], ['axle', 4.4, 5], ['beam-10', 6.4, 5],
+      ['pin-rotating', 4.4, 5], ['gear-32', 4.4, 5], ['axle', 4.4, 5], ['beam', 6.4, 5, 0, { length: 4 }],
       ['ball-s', 7.6, 6],
     ]),
   },

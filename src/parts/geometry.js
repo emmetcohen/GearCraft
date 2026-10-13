@@ -8,7 +8,7 @@
 // Nothing here touches the DOM or the physics engine, so it can be unit
 // tested in Node and reused by every mode.
 // =============================================================================
-import { getDef, gearLayers, HOLE_SPACING, MODULE, roleOf } from './partDefs.js';
+import { getDef, partDef, gearLayers, HOLE_SPACING, MODULE, roleOf } from './partDefs.js';
 
 /** Rotate a local point (lx, ly) by `angle` and move it to (x, y). */
 export function localToWorld(x, y, angle, lx, ly) {
@@ -25,29 +25,67 @@ export function worldToLocal(x, y, angle, wx, wy) {
 
 /** Local x-positions of the holes along a beam of length L (ends included). */
 export function beamHoleOffsets(length) {
-  const n = Math.round(length / HOLE_SPACING);
+  // Holes every HOLE_SPACING from the left end. A drawn beam's length may not
+  // be a whole number of holes, so the right end always gets a hole too.
+  const n = Math.floor(length / HOLE_SPACING + 1e-6);
   const out = [];
   for (let i = 0; i <= n; i++) out.push(-length / 2 + i * HOLE_SPACING);
+  const end = length / 2;
+  if (end - out[out.length - 1] > 1e-6) {
+    if (end - out[out.length - 1] < HOLE_SPACING * 0.45 && out.length > 1) out.pop();
+    out.push(end);
+  }
   return out;
+}
+
+/** Local x-positions of a beam-like part's holes (sliders only have end holes). */
+export function holesOf(def) {
+  if (def.kind === 'slider') return [-def.length / 2, def.length / 2];
+  if (def.kind === 'beam') return beamHoleOffsets(def.length);
+  return [];
+}
+
+/** The two end points of a drawn part (beam, spring, rope, slider, track). */
+export function lineEnds(part) {
+  const def = partDef(part);
+  const h = def.length / 2;
+  return [localToWorld(part.x, part.y, part.angle, -h, 0), localToWorld(part.x, part.y, part.angle, h, 0)];
+}
+
+/** Centre, angle and length of a line from a to b (inverse of lineEnds). */
+export function lineFrom(a, b) {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, angle: Math.atan2(b.y - a.y, b.x - a.x), length: Math.hypot(b.x - a.x, b.y - a.y) };
 }
 
 /**
  * Sockets are the points where parts can join each other.
- * Returns world-space points: [{ x, y, index }].
- *  - beams: every hole
+ * Returns world-space points: [{ x, y, index, sub, pivot }].
+ *  - beams: every hole (sliders: their two end holes)
  *  - everything else with a role (rotors, drivers, connectors): its centre
- *  - loose objects: none
+ *  - drive wheels: also a crank PIN off-centre (pivot: anything there pivots)
+ *  - sliders: also the sliding block (sub 'hub', pivot)
+ *  - loose objects and links: none
+ * `sub` says which element of the part the socket belongs to ('main' or 'hub').
  */
 export function socketsOf(part) {
-  const def = getDef(part.type);
+  const def = partDef(part);
   const role = roleOf(def.kind);
-  if (role === 'object') return [];
+  if (role === 'object' || role === 'link') return [];
   if (role === 'beam') {
-    return beamHoleOffsets(def.length).map((lx, index) => ({
-      ...localToWorld(part.x, part.y, part.angle, lx, 0), index,
+    const out = holesOf(def).map((lx, index) => ({
+      ...localToWorld(part.x, part.y, part.angle, lx, 0), index, sub: 'main', pivot: false,
     }));
+    if (def.kind === 'slider') {
+      const t = part.props?.slide ?? 0;
+      out.push({ ...localToWorld(part.x, part.y, part.angle, t, 0), index: 2, sub: 'hub', pivot: true });
+    }
+    return out;
   }
-  return [{ x: part.x, y: part.y, index: 0 }];
+  const out = [{ x: part.x, y: part.y, index: 0, sub: 'main', pivot: false }];
+  if (def.pinOffset) {
+    out.push({ ...localToWorld(part.x, part.y, part.angle, def.pinOffset, 0), index: 1, sub: 'main', pivot: true });
+  }
+  return out;
 }
 
 /** Outer radius used for hit testing / selection rings of round parts. */
@@ -55,6 +93,7 @@ export function outerRadius(def) {
   switch (def.kind) {
     case 'gear': case 'compoundGear':
       return gearLayers(def)[0].r + MODULE * 0.9;
+    case 'sprocket': return def.radius + 0.12;
     case 'wheel': return def.radius;
     case 'motor': return def.housing * 0.62;
     case 'crank': return def.armLength + 0.3;
@@ -65,12 +104,17 @@ export function outerRadius(def) {
 
 /** Does world point (wx, wy) touch this part? Used for clicking parts. */
 export function hitTest(part, wx, wy) {
-  const def = getDef(part.type);
+  const def = partDef(part);
   const p = worldToLocal(part.x, part.y, part.angle, wx, wy);
+  if (def.drawn) {
+    return Math.abs(p.x) <= def.length / 2 + def.thickness / 2 &&
+           Math.abs(p.y) <= Math.max(def.thickness / 2, 0.2) + 0.05;
+  }
   switch (def.kind) {
     case 'beam':
       return Math.abs(p.x) <= def.length / 2 + def.thickness / 2 &&
              Math.abs(p.y) <= def.thickness / 2 + 0.05;
+    case 'chain': return false; // picked separately (it depends on two other parts)
     case 'motor': {
       const h = def.housing / 2;
       return Math.abs(p.x) <= h && Math.abs(p.y) <= h;
@@ -98,6 +142,8 @@ export function hitTest(part, wx, wy) {
 /** Selection "priority": small connectors sit on top of bigger parts, so
  *  clicking a pin on a gear selects the pin. Higher = picked first. */
 export function pickPriority(def) {
+  if (def.kind === 'spring' || def.kind === 'rope') return 3.5;
+  if (def.kind === 'track') return 0;
   switch (roleOf(def.kind)) {
     case 'connector': return 4;
     case 'driver': return 3;
@@ -107,17 +153,22 @@ export function pickPriority(def) {
   }
 }
 
+/** Every part under a world point, topmost first. */
+export function partsAt(parts, wx, wy) {
+  return parts.map((part, i) => ({ part, i }))
+    .filter(({ part }) => hitTest(part, wx, wy))
+    .map(({ part, i }) => {
+      const def = partDef(part);
+      // Prefer higher priority, then smaller parts, then later (on-top) parts.
+      return { part, score: pickPriority(def) * 1000 - outerRadius(def) * 10 + i * 0.001 };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.part);
+}
+
 /** Find the topmost part under a world point (or null). */
 export function pickPart(parts, wx, wy) {
-  let best = null, bestScore = -Infinity;
-  parts.forEach((part, i) => {
-    if (!hitTest(part, wx, wy)) return;
-    const def = getDef(part.type);
-    // Prefer higher priority, then smaller parts, then later (on-top) parts.
-    const score = pickPriority(def) * 1000 - outerRadius(def) * 10 + i * 0.001;
-    if (score > bestScore) { bestScore = score; best = part; }
-  });
-  return best;
+  return partsAt(parts, wx, wy)[0] || null;
 }
 
 /** Gear circles of a placed part in world space: [{ uid, layer, teeth, r, x, y }]. */

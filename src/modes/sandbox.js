@@ -12,7 +12,7 @@
 // The puzzle mode (puzzle.js, later) will be another object with the same
 // shape, plus goals/level data. Parts and physics never import modes.
 // =============================================================================
-import { getDef } from '../parts/partDefs.js';
+import { getDef, partDef, HOLE_SPACING } from '../parts/partDefs.js';
 import { findPart } from '../core/build.js';
 import { EXAMPLES } from '../save/examples.js';
 
@@ -45,10 +45,13 @@ export const sandboxMode = {
         selBody.innerHTML = '<p>Click a part to select it.</p>';
         return;
       }
-      const def = getDef(part.type);
+      const def = partDef(part);
       const p = document.createElement('p');
-      p.innerHTML = `<b>${def.name}</b>${def.teeth ? ` · ${def.teeth} teeth` : ''}${def.layers ? ` · ${def.layers.join('/')} teeth` : ''} · ${def.mass} kg`;
+      const len = def.drawn ? ` · ${(def.length / HOLE_SPACING).toFixed(1).replace(/\.0$/, '')} holes long` : '';
+      const mass = def.mass ? ` · ${+def.mass.toFixed(2)} kg` : '';
+      p.innerHTML = `<b>${def.name}</b>${def.teeth ? ` · ${def.teeth} teeth` : ''}${def.layers ? ` · ${def.layers.join('/')} teeth` : ''}${len}${mass}`;
       selBody.appendChild(p);
+      if (def.tip) selBody.insertAdjacentHTML('beforeend', `<p class="hint">${def.tip}</p>`);
       if (!app.editable) {
         selBody.insertAdjacentHTML('beforeend', '<p><i>Reset to edit.</i></p>');
         return;
@@ -63,7 +66,20 @@ export const sandboxMode = {
           label: 'Reverse direction', checked: !!part.props.reverse,
           onChange: (v) => app.setPartProp(part.uid, 'reverse', v),
         });
+        panel.toggle(selBody, {
+          label: '🎮 Drive with ← / → keys', checked: !!part.props.keys,
+          title: 'Off: runs by itself. On: only turns while you hold an arrow key, and brakes when you let go.',
+          onChange: (v) => app.setPartProp(part.uid, 'keys', v),
+        });
       }
+      if (def.kind === 'spring') {
+        panel.choice(selBody, {
+          label: 'Stiffness', value: part.props.stiffness ?? 'medium',
+          options: [['soft', 'Soft'], ['medium', 'Medium'], ['stiff', 'Stiff']],
+          onChange: (v) => app.setPartProp(part.uid, 'stiffness', v),
+        });
+      }
+      if (def.drawn) selBody.insertAdjacentHTML('beforeend', '<p class="hint">Drag the pink end handles to stretch or swing it.</p>');
     };
     app.on((type) => { if (type === 'select' || type === 'state' || type === 'changed') renderSelection(); });
     renderSelection();
@@ -103,6 +119,13 @@ export const sandboxMode = {
       onChange: (v) => { app.options.grid = v; },
     });
     panel.toggle(view, {
+      label: 'Show joints', checked: app.options.joints,
+      title: 'Little markers where parts join: ■ bolted solid, ○ spins freely, yellow = driven by a motor/crank',
+      onChange: (v) => { app.options.joints = v; },
+    });
+    view.insertAdjacentHTML('beforeend',
+      `<p class="legend"><span class="j weld"></span>bolted <span class="j spin"></span>spins <span class="j drive"></span>driven</p>`);
+    panel.toggle(view, {
       label: 'Auto-pin gears', checked: app.options.autoPin,
       title: 'A gear dropped in empty space gets a rotating pin so it can spin in place',
       onChange: (v) => { app.options.autoPin = v; },
@@ -110,16 +133,18 @@ export const sandboxMode = {
     this._loadToggle = loadToggle;
 
     // ---- help ------------------------------------------------------------
-    const help = panel.section('How to build');
-    help.innerHTML += `<ul class="tips">
-      <li>Drag parts from the left onto the world.</li>
-      <li>Gears <b>snap</b> to mesh. A white dot = meshed.</li>
-      <li>Put gears &amp; wheels on a <b>motor</b>, a <b>pin</b> or a beam hole.</li>
-      <li>Things stacked on one point share an axle.</li>
+    const help = panel.section('How to build', { collapsible: true });
+    help.insertAdjacentHTML('beforeend', `<ul class="tips">
+      <li><b>Click</b> a part on the left (or a tool below the world) to pick it, then click as often as you like. <kbd>Esc</kbd> or right-click puts it down.</li>
+      <li><b>Beams, springs, ropes, sliders, track:</b> drag from one point to another to draw them.</li>
+      <li>Gears <b>snap</b> to mesh (white dot). Stack two gears on one pin for a compound gear.</li>
+      <li><b>Chain:</b> click one sprocket, then another. Same direction, any distance.</li>
+      <li>Things on one point share it: a wheel on a beam hole <b>spins</b>; beams on beams are <b>bolted</b>; add a <b>hinge</b> to let beams pivot.</li>
+      <li><b>Car:</b> draw a beam, put a motor + wheel on one end hole, a wheel on the other. Set the motor to <b>← / →</b> to drive it.</li>
+      <li><b>Train:</b> two drive wheels on a beam, then draw a beam between their yellow <b>crank pins</b> (rotate wheels with <kbd>Q</kbd>/<kbd>E</kbd> so the rod sits below the frame).</li>
       <li><kbd>Q</kbd>/<kbd>E</kbd> rotate · <kbd>Del</kbd> delete · <kbd>Space</kbd> play/pause</li>
-      <li>Drag empty space to pan, scroll to zoom.</li>
-      <li>While running: drag a <b>crank</b> handle to turn it, or grab loose objects.</li>
-    </ul>`;
+      <li>Drag empty space to pan, scroll to zoom. Click a part to see its numbers.</li>
+    </ul>`);
   },
 
   onKey(app, e) {

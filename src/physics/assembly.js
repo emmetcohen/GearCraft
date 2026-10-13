@@ -22,6 +22,12 @@
 //     except a motor's shaft, which still turns.
 //   • An AXLE locks the beams at that point onto the shaft too, so a beam
 //     turns with the gear (great for arms and levers).
+//   • PIVOT sockets (a drive wheel's crank pin, a slider's block) always
+//     pivot on whatever else is at that point: side rods, pistons, legs.
+//   • A SLIDER's rail is bolted down if nothing holds its end holes; its
+//     block slides along it (a prismatic joint).
+//   • LINKS (chains, springs, ropes) have no sockets: they're added by the
+//     gear train (chains) and the physics world (springs, ropes).
 //
 // Each part becomes one or two ELEMENTS (a motor has a housing AND a spinning
 // hub). Elements are what get welded/jointed.
@@ -56,14 +62,17 @@ class UnionFind {
   }
 }
 
-/** Group sockets of all parts into joint points (clusters). */
+/** Group sockets of all parts into joint points (clusters).
+ *  cl.uids   = parts joined here by an ordinary socket
+ *  cl.pivots = [{ uid, sub }] pivot sockets here (crank pins, slider blocks) */
 export function findClusters(parts) {
   const clusters = [];
   for (const part of parts) {
     for (const s of socketsOf(part)) {
       let c = clusters.find((cl) => Math.hypot(cl.x - s.x, cl.y - s.y) < CLUSTER_TOL);
-      if (!c) { c = { x: s.x, y: s.y, uids: [] }; clusters.push(c); }
-      if (!c.uids.includes(part.uid)) c.uids.push(part.uid);
+      if (!c) { c = { x: s.x, y: s.y, uids: [], pivots: [] }; clusters.push(c); }
+      if (s.pivot) c.pivots.push({ uid: part.uid, sub: s.sub });
+      else if (!c.uids.includes(part.uid)) c.uids.push(part.uid);
     }
   }
   return clusters;
@@ -75,7 +84,9 @@ export function findClusters(parts) {
  *   elements: Map<string,{key,uid,sub}>,
  *   bodies: Array<{id,keys,isStatic,origin}>,
  *   bodyOf: (key)=>string,
- *   revolutes: Array<{id,a,b,x,y,driverUid}>,
+ *   revolutes: Array<{id,a,b,x,y,driverUid,pivot}>,
+ *   prismatics: Array<{a,b,uid}>,
+ *   joints: Array<{x,y,type}>,   // 'weld' | 'spin' | 'drive' (edit-mode markers)
  *   clusters: Array, warnings: string[] }}
  */
 export function buildAssembly(parts) {
@@ -89,10 +100,11 @@ export function buildAssembly(parts) {
   // ---- elements --------------------------------------------------------
   for (const part of parts) {
     const def = getDef(part.type);
+    if (roleOf(def.kind) === 'link') continue; // chains/springs/ropes aren't bodies
     addElement(mainKey(part.uid), part.uid, 'main');
-    if (def.kind === 'motor' || def.kind === 'crank') addElement(hubKey(part.uid), part.uid, 'hub');
-    // Map pieces (ramps, blocks) and pins are part of the static background.
-    if (def.kind === 'ramp' || def.kind === 'block' ||
+    if (def.kind === 'motor' || def.kind === 'crank' || def.kind === 'slider') addElement(hubKey(part.uid), part.uid, 'hub');
+    // Map pieces (ramps, blocks, track) and pins are part of the static background.
+    if (def.kind === 'ramp' || def.kind === 'block' || def.kind === 'track' ||
         def.kind === 'fixedPin' || def.kind === 'rotPin') {
       uf.union(WORLD, mainKey(part.uid));
     }
@@ -100,7 +112,24 @@ export function buildAssembly(parts) {
 
   // ---- joining rules per cluster --------------------------------------
   const clusters = findClusters(parts);
-  const pendingRevolutes = []; // [elemKeyA, elemKeyB, cluster, driverUid]
+
+  // A part hooked onto another part's PIVOT (a rod on a crank pin or slider
+  // block) must move relative to it, so it never bolts onto that part's
+  // other holes, even where it happens to lie across them (a piston rod
+  // running along its rail).
+  const hookedTo = new Map(); // pivot owner uid -> Set of uids on its pivots
+  for (const cl of clusters) {
+    for (const pv of cl.pivots) {
+      if (!hookedTo.has(pv.uid)) hookedTo.set(pv.uid, new Set());
+      for (const u of cl.uids) hookedTo.get(pv.uid).add(u);
+    }
+  }
+  for (const cl of clusters) {
+    for (const [owner, hooked] of hookedTo) {
+      if (cl.uids.includes(owner)) cl.uids = cl.uids.filter((u) => u === owner || !hooked.has(u));
+    }
+  }
+  const pendingRevolutes = []; // [elemKeyA, elemKeyB, cluster, driverUid, pivot]
   const weld = (a, b) => uf.union(a, b);
 
   clusters.forEach((cl, ci) => {
@@ -160,8 +189,29 @@ export function buildAssembly(parts) {
       if (fixed && !driver) weld(WORLD, unit[0]);
       else if (carrier) pendingRevolutes.push([carrier, unit[0], cl, driver ? driver.uid : null]);
     }
+
+    // Pivot sockets (crank pins, slider blocks) pivot on whatever is here.
+    const pivotKeys = cl.pivots.map((pv) => (pv.sub === 'hub' ? hubKey(pv.uid) : mainKey(pv.uid)));
+    if (pivotKeys.length) {
+      const base = freeBeams[0] ?? unit[0] ?? (fixed || rot ? WORLD : pivotKeys[0]);
+      for (const k of pivotKeys) {
+        if (k === base) continue;
+        if (fixed && base === WORLD) weld(WORLD, k);
+        else pendingRevolutes.push([base, k, cl, null, true]);
+      }
+    }
     cl.index = ci;
   });
+
+  // Sliders: the rail is bolted to the background unless something holds
+  // one of its end holes; the block slides along the rail.
+  const pendingPrismatics = [];
+  for (const part of parts) {
+    if (getDef(part.type).kind !== 'slider') continue;
+    const held = clusters.some((cl) => cl.uids.length > 1 && cl.uids.includes(part.uid));
+    if (!held) weld(WORLD, mainKey(part.uid));
+    pendingPrismatics.push([mainKey(part.uid), hubKey(part.uid), part.uid]);
+  }
 
   // Loose objects (balls/crates) are simply their own bodies (nothing to do).
 
@@ -176,21 +226,38 @@ export function buildAssembly(parts) {
 
   const warnings = [];
   const revolutes = [];
-  for (const [ka, kb, cl, driverUid] of pendingRevolutes) {
-    const a = bodyOf(ka), b = bodyOf(kb);
+  for (const [ka, kb, cl, driverUid, pivot = false] of pendingRevolutes) {
+    let a = bodyOf(ka), b = bodyOf(kb);
     if (a === b) {
       warnings.push(`Parts at (${cl.x.toFixed(1)}, ${cl.y.toFixed(1)}) are locked together, so that joint can't turn.`);
       continue;
     }
-    if (b === WORLD) continue; // can't spin the background
-    revolutes.push({ id: revolutes.length, a, b, x: cl.x, y: cl.y, driverUid });
+    if (b === WORLD) {
+      if (!pivot) continue; // can't spin the background
+      [a, b] = [b, a];
+    }
+    revolutes.push({ id: revolutes.length, a, b, x: cl.x, y: cl.y, driverUid, pivot, cluster: cl.index });
+  }
+  const prismatics = [];
+  for (const [ka, kb, uid] of pendingPrismatics) {
+    const a = bodyOf(ka), b = bodyOf(kb);
+    if (a !== b && b !== WORLD) prismatics.push({ a, b, uid });
+  }
+
+  // Joint markers for edit mode: what happens at each shared point?
+  const joints = [];
+  for (const cl of clusters) {
+    if (cl.uids.length + cl.pivots.length < 2) continue;
+    const here = revolutes.filter((r) => r.cluster === cl.index);
+    const type = here.some((r) => r.driverUid != null) ? 'drive' : here.length ? 'spin' : 'weld';
+    joints.push({ x: cl.x, y: cl.y, type });
   }
 
   // Body origin: its main pivot if it has one (nice for rotation), otherwise
   // the position of its first part.
   for (const body of bodyMap.values()) {
     if (body.isStatic) { body.origin = { x: 0, y: 0 }; continue; }
-    const pivot = revolutes.find((r) => r.b === body.id);
+    const pivot = revolutes.find((r) => r.b === body.id && !r.pivot);
     if (pivot) body.origin = { x: pivot.x, y: pivot.y };
     else {
       const p = byUid.get(elements.get(body.keys[0]).uid);
@@ -199,8 +266,9 @@ export function buildAssembly(parts) {
   }
 
   return {
-    elements, bodies: [...bodyMap.values()], bodyOf, revolutes, clusters, warnings,
-    /** The revolute that a body spins on (it is the joint's body B), if any. */
-    axleOf(bodyId) { return revolutes.find((r) => r.b === bodyId) || null; },
+    elements, bodies: [...bodyMap.values()], bodyOf, revolutes, prismatics, joints, clusters, warnings,
+    /** The axle revolute that a body spins on (it is the joint's body B), if any.
+     *  Pivots (crank pins) don't count: a wheel spins on its centre. */
+    axleOf(bodyId) { return revolutes.find((r) => r.b === bodyId && !r.pivot) || null; },
   };
 }

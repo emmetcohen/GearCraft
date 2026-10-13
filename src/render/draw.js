@@ -116,6 +116,23 @@ function drawOneGear(ctx, px, teeth, r, fill) {
   ctx.stroke();
 }
 
+/** A rope look: dark outline, tan core, braid dashes. `trace(ctx)` adds the path. */
+export function ropeStroke(ctx, px, fill, trace) {
+  ctx.beginPath();
+  trace(ctx);
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = OUTLINE;
+  ctx.lineWidth = 5 / px;
+  ctx.stroke();
+  ctx.strokeStyle = fill;
+  ctx.lineWidth = 2.5 / px;
+  ctx.stroke();
+  ctx.setLineDash([3 / px, 4 / px]);
+  ctx.strokeStyle = shade(fill, -0.3);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
 // ------------------------------------------------------------ part shapes --
 // Each painter draws in local part space (origin = part centre, already
 // rotated). `fill` is the main colour (already load-tinted if needed).
@@ -138,6 +155,38 @@ const painters = {
     ctx.restore();
     drawOneGear(ctx, px, layers[1].teeth, layers[1].r, shade(fill, 0.18));
     axleHole(ctx, px);
+  },
+
+  sprocket(ctx, def, px, fill) {
+    // Thin plate with pointy teeth and cut-out spokes: reads as "bike part".
+    const r = def.radius, n = def.teeth;
+    const ro = r + 0.12, rr = r - 0.06;
+    const step = (Math.PI * 2) / n;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const a = i * step;
+      ctx.lineTo(rr * Math.cos(a - step * 0.5), rr * Math.sin(a - step * 0.5));
+      ctx.lineTo(ro * Math.cos(a - step * 0.12), ro * Math.sin(a - step * 0.12));
+      ctx.lineTo(ro * Math.cos(a + step * 0.12), ro * Math.sin(a + step * 0.12));
+    }
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    ctx.fillStyle = shade(fill, -0.45);
+    const holes = r > 1.2 ? 6 : 4;
+    for (let i = 0; i < holes; i++) {
+      const a = (i / holes) * Math.PI * 2;
+      circle(ctx, Math.cos(a) * r * 0.55, Math.sin(a) * r * 0.55, r * 0.2);
+      ctx.fill();
+    }
+    circle(ctx, 0, 0, Math.min(0.3, r * 0.35));
+    ctx.fillStyle = shade(fill, 0.3);
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+    axleHole(ctx, px, 0.12);
   },
 
   wheel(ctx, def, px, fill) {
@@ -176,6 +225,25 @@ const painters = {
     outline(ctx, px, 2);
     ctx.stroke();
     axleHole(ctx, px, 0.12);
+    if (def.pinOffset) {
+      // Drive wheel: a counterweight opposite a chunky crank pin.
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.58, Math.PI * 0.68, Math.PI * 1.32);
+      ctx.arc(0, 0, r * 0.3, Math.PI * 1.32, Math.PI * 0.68, true);
+      ctx.closePath();
+      ctx.fillStyle = shade(fill, -0.3);
+      ctx.fill();
+      outline(ctx, px, 2);
+      ctx.stroke();
+      ctx.strokeStyle = shade(fill, -0.45);
+      ctx.lineWidth = Math.max(3, 0.14 * px) / px;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(def.pinOffset, 0); ctx.stroke();
+      circle(ctx, def.pinOffset, 0, 0.15);
+      ctx.fillStyle = '#ffe066';
+      ctx.fill();
+      outline(ctx, px, 2);
+      ctx.stroke();
+    }
   },
 
   motor(ctx, def, px, fill) {
@@ -245,6 +313,88 @@ const painters = {
       circle(ctx, hx, 0, t * 0.2);
       ctx.fill();
     }
+  },
+
+  slider(ctx, def, px, fill) {
+    // The rail: a slim slotted bar with an end hole at each end.
+    const L = def.length;
+    roundRect(ctx, -L / 2 - 0.22, -0.16, L + 0.44, 0.32, 0.16);
+    ctx.fillStyle = shade(fill, 0.35);
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    roundRect(ctx, -L / 2 + 0.2, -0.05, L - 0.4, 0.1, 0.05);
+    ctx.fillStyle = shade(fill, -0.3);
+    ctx.fill();
+    ctx.fillStyle = shade(fill, -0.5);
+    for (const hx of [-L / 2, L / 2]) { circle(ctx, hx, 0, 0.09); ctx.fill(); }
+  },
+
+  /** A slider's moving block (drawn with the block's own transform). */
+  sliderHub(ctx, def, px, fill) {
+    roundRect(ctx, -0.36, -0.3, 0.72, 0.6, 0.12);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    circle(ctx, 0, 0, 0.12);
+    ctx.fillStyle = '#ffe066';
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+  },
+
+  spring(ctx, def, px, fill) {
+    // A zigzag coil between two eyes. Fixed coil count, so it visibly squashes.
+    const L = def.length, h = def.thickness / 2, coils = 9;
+    const a = -L / 2 + 0.2, b = L / 2 - 0.2;
+    ctx.beginPath();
+    ctx.moveTo(-L / 2, 0); ctx.lineTo(a, 0);
+    for (let i = 0; i < coils * 2; i++) {
+      ctx.lineTo(a + ((i + 0.5) / (coils * 2)) * (b - a), i % 2 ? -h : h);
+    }
+    ctx.lineTo(b, 0); ctx.lineTo(L / 2, 0);
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 6 / px;
+    ctx.stroke();
+    ctx.strokeStyle = fill;
+    ctx.lineWidth = 3 / px;
+    ctx.stroke();
+    for (const x of [-L / 2, L / 2]) {
+      circle(ctx, x, 0, 0.12);
+      ctx.fillStyle = shade(fill, 0.4);
+      ctx.fill();
+      outline(ctx, px, 2);
+      ctx.stroke();
+    }
+  },
+
+  rope(ctx, def, px, fill) {
+    const L = def.length;
+    ropeStroke(ctx, px, fill, (c) => { c.moveTo(-L / 2, 0); c.lineTo(L / 2, 0); });
+    for (const x of [-L / 2, L / 2]) {
+      circle(ctx, x, 0, 0.09);
+      ctx.fillStyle = shade(fill, -0.3);
+      ctx.fill();
+    }
+  },
+
+  track(ctx, def, px, fill) {
+    // Sleepers under a steel rail.
+    const L = def.length, t = def.thickness;
+    roundRect(ctx, -L / 2, -t / 2, L, t, t * 0.3);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    ctx.fillStyle = shade(fill, -0.3);
+    for (let x = -L / 2 + 0.3; x < L / 2 - 0.1; x += 0.6) ctx.fillRect(x - 0.08, -t / 2, 0.16, t * 0.75);
+    roundRect(ctx, -L / 2, t / 2 - 0.1, L, 0.12, 0.05);
+    ctx.fillStyle = '#d8d2e6';
+    ctx.fill();
+    outline(ctx, px, 1.5);
+    ctx.stroke();
   },
 
   axle(ctx, def, px, fill) {
@@ -405,4 +555,52 @@ export function drawPart(ctx, def, t, px, opts = {}) {
 }
 
 /** Does this kind have a separately-moving hub layer? */
-export const hasHub = (kind) => kind === 'motor' || kind === 'crank';
+export const hasHub = (kind) => kind === 'motor' || kind === 'crank' || kind === 'slider';
+
+// ------------------------------------------------------------------ chains --
+/**
+ * Draw a chain wrapped round two circles (screen space, pixels).
+ * a, b = { x, y, r } in screen pixels; phase = how far the chain has moved
+ * (pixels), so the links visibly travel. state: 'ok' | 'bad' | 'selected'.
+ */
+export function drawChain(ctx, a, b, phase, state = 'ok') {
+  const path = chainPath(a, b);
+  if (!path) return;
+  const trace = () => {
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, a.r, path.thA1, path.thA2, path.ccwA);
+    ctx.lineTo(path.b2.x, path.b2.y);
+    ctx.arc(b.x, b.y, b.r, path.thB2, path.thB1, path.ccwB);
+    ctx.closePath();
+  };
+  const scale = Math.max(0.5, Math.min(1.6, (a.r + b.r) / 60));
+  ctx.save();
+  ctx.lineJoin = 'round';
+  trace();
+  if (state === 'selected') { ctx.strokeStyle = '#ff006e'; ctx.lineWidth = 12 * scale; ctx.stroke(); }
+  ctx.strokeStyle = OUTLINE;
+  ctx.lineWidth = 7 * scale;
+  ctx.stroke();
+  ctx.strokeStyle = state === 'bad' ? '#ef233c' : '#9a93ad';
+  ctx.lineWidth = 4 * scale;
+  ctx.setLineDash([5 * scale, 3 * scale]);
+  ctx.lineDashOffset = phase;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Outer tangents of two circles, for drawing and hit-testing a chain. */
+export function chainPath(a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+  if (d <= Math.abs(a.r - b.r) + 1e-6) return null;
+  const th = Math.atan2(dy, dx);
+  const beta = Math.acos((a.r - b.r) / d);
+  // Tangent normals at th ± beta. Upper run: A(th+β) → B(th+β); lower: A(th−β) → B(th−β).
+  const p = (c, ang) => ({ x: c.x + Math.cos(ang) * c.r, y: c.y + Math.sin(ang) * c.r });
+  return {
+    a1: p(a, th + beta), b1: p(b, th + beta), a2: p(a, th - beta), b2: p(b, th - beta),
+    // Around A the far way (th+β → th−β through th+π), around B the near way.
+    thA1: th + beta, thA2: th - beta + Math.PI * 2, ccwA: false,
+    thB1: th + beta, thB2: th - beta, ccwB: false,
+  };
+}

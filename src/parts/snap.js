@@ -9,8 +9,8 @@
 // Gears are then rotated so their teeth slot between the neighbour's teeth
 // (purely cosmetic — the physics uses ratio math, not teeth).
 // =============================================================================
-import { getDef, gearLayers, roleOf } from './partDefs.js';
-import { socketsOf, gearCirclesOf, beamHoleOffsets, localToWorld } from './geometry.js';
+import { getDef, partDef, gearLayers, roleOf, LENGTH_STEP } from './partDefs.js';
+import { socketsOf, gearCirclesOf, holesOf, localToWorld, lineEnds } from './geometry.js';
 import { MESH_TOL } from '../physics/gearTrain.js';
 
 export const SOCKET_SNAP = 0.5;   // world units
@@ -20,7 +20,8 @@ export const GRID = 0.4;
 const roundTo = (v, step) => Math.round(v / step) * step;
 
 /** Human-friendly description of what a socket belongs to. */
-function socketLabel(def) {
+function socketLabel(def, socket) {
+  if (socket?.pivot) return def.kind === 'slider' ? 'on slider block' : 'on crank pin';
   switch (def.kind) {
     case 'motor': return 'on motor shaft';
     case 'crank': return 'on crank shaft';
@@ -29,6 +30,7 @@ function socketLabel(def) {
     case 'axle': return 'on axle';
     case 'hinge': return 'on hinge';
     case 'beam': return 'on beam hole';
+    case 'slider': return 'on slider rail';
     default: return `stacked on ${def.name}`;
   }
 }
@@ -39,7 +41,7 @@ function nearestSocket(others, x, y, radius) {
   for (const part of others) {
     for (const s of socketsOf(part)) {
       const d = Math.hypot(s.x - x, s.y - y);
-      if (d < radius && (!best || d < best.d)) best = { x: s.x, y: s.y, d, part };
+      if (d < radius && (!best || d < best.d)) best = { x: s.x, y: s.y, d, part, socket: s };
     }
   }
   return best;
@@ -68,13 +70,26 @@ export function meshPhase(a, aAngle, bx, by, nB) {
  * @returns {{ x, y, angle, hint: string|null }}
  */
 export function snapPart(parts, type, x, y, angle, opts = {}) {
-  const def = getDef(type);
+  const def = opts.length != null ? partDef({ type, props: { length: opts.length } }) : getDef(type);
   const role = roleOf(def.kind);
   const others = parts.filter((p) => p.uid !== opts.excludeUid);
   const useGrid = opts.grid !== false;
   let out = { x, y, angle, hint: null };
 
-  if (role === 'object') {
+  if (def.kind === 'track' || def.kind === 'spring' || def.kind === 'rope') {
+    // Drawn links/track being moved: snap whichever end is closest to a target.
+    let best = null;
+    for (const lx of [-def.length / 2, def.length / 2]) {
+      const h = localToWorld(x, y, angle, lx, 0);
+      const t = nearestAnchor(others, def.kind, h.x, h.y);
+      if (t && (!best || t.d < best.d)) best = { ...t, dx: t.x - h.x, dy: t.y - h.y };
+    }
+    if (best) return { x: x + best.dx, y: y + best.dy, angle, hint: `end ${best.hint.replace('on ', 'onto ')}` };
+    if (useGrid) { out.x = roundTo(x, GRID / 2); out.y = roundTo(y, GRID / 2); }
+    return out;
+  }
+
+  if (role === 'object' || role === 'link') {
     // Loose objects go wherever you drop them (ramps snap to the grid).
     if (useGrid && (def.kind === 'ramp' || def.kind === 'block')) {
       out.x = roundTo(x, GRID / 2); out.y = roundTo(y, GRID / 2);
@@ -85,12 +100,12 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
   if (role === 'beam') {
     // Try every hole of this beam against every socket nearby.
     let best = null;
-    for (const lx of beamHoleOffsets(def.length)) {
+    for (const lx of holesOf(def)) {
       const h = localToWorld(x, y, angle, lx, 0);
       const s = nearestSocket(others, h.x, h.y, SOCKET_SNAP);
       if (s && (!best || s.d < best.d)) best = { ...s, dx: s.x - h.x, dy: s.y - h.y };
     }
-    if (best) return { x: x + best.dx, y: y + best.dy, angle, hint: `hole ${socketLabel(getDef(best.part.type)).replace('on ', 'onto ')}` };
+    if (best) return { x: x + best.dx, y: y + best.dy, angle, hint: `hole ${socketLabel(getDef(best.part.type), best.socket).replace('on ', 'onto ')}` };
     if (useGrid) { out.x = roundTo(x, GRID); out.y = roundTo(y, GRID); }
     return out;
   }
@@ -98,7 +113,7 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
   // Rotors, drivers, connectors: snap the centre onto a socket.
   const s = nearestSocket(others, x, y, SOCKET_SNAP);
   if (s) {
-    out = { x: s.x, y: s.y, angle, hint: socketLabel(getDef(s.part.type)) };
+    out = { x: s.x, y: s.y, angle, hint: socketLabel(getDef(s.part.type), s.socket) };
   } else if (def.kind === 'gear' || def.kind === 'compoundGear') {
     // Mesh snap: find the gear circle whose "touching distance" is closest.
     let best = null;
@@ -145,4 +160,62 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
     }
   }
   return out;
+}
+
+// ------------------------------------------------------------ drawn parts --
+
+/** Ends of placed track pieces (track snaps end-to-end). */
+function trackEnds(others) {
+  const out = [];
+  for (const p of others) if (getDef(p.type).kind === 'track') for (const e of lineEnds(p)) out.push({ ...e, part: p });
+  return out;
+}
+
+/** Nearest thing the end of a drawn part of `kind` can attach to. */
+function nearestAnchor(others, kind, x, y) {
+  if (kind === 'track') {
+    let best = null;
+    for (const e of trackEnds(others)) {
+      const d = Math.hypot(e.x - x, e.y - y);
+      if (d < SOCKET_SNAP && (!best || d < best.d)) best = { x: e.x, y: e.y, d, hint: 'on track end' };
+    }
+    return best;
+  }
+  const s = nearestSocket(others, x, y, SOCKET_SNAP);
+  return s ? { x: s.x, y: s.y, d: s.d, hint: socketLabel(getDef(s.part.type), s.socket) } : null;
+}
+
+/**
+ * Where does one END of a part being drawn land?
+ * @returns {{ x, y, hint: string|null, attached: boolean }}
+ */
+export function snapEnd(parts, kind, x, y, opts = {}) {
+  const a = nearestAnchor(parts, kind, x, y);
+  if (a) return { x: a.x, y: a.y, hint: a.hint, attached: true };
+  if (opts.grid !== false) return { x: roundTo(x, GRID), y: roundTo(y, GRID), hint: null, attached: false };
+  return { x, y, hint: null, attached: false };
+}
+
+/**
+ * The far end of a part being drawn from `a` toward the pointer `p`.
+ * Lengths snap to whole holes so the far end lands on a hole too; the angle
+ * snaps to 15° steps unless the end finds something to attach to.
+ * @returns {{ x, y, length, hint, attached }}
+ */
+export function snapDrawEnd(parts, kind, a, p, opts = {}) {
+  const step = kind === 'track' ? LENGTH_STEP / 2 : LENGTH_STEP;
+  const min = kind === 'track' ? 1 : LENGTH_STEP * 2;
+  // 1. Something to attach to near the pointer? Aim right at it.
+  const t = nearestAnchor(parts, kind, p.x, p.y);
+  if (t) {
+    const d = Math.hypot(t.x - a.x, t.y - a.y);
+    // Beams always get a hole at both ends, so the far end can land
+    // exactly on it whatever the distance.
+    if (d >= min * 0.75) return { x: t.x, y: t.y, length: d, hint: t.hint, attached: true };
+  }
+  // 2. Free end: snap the angle and the length.
+  let ang = Math.atan2(p.y - a.y, p.x - a.x);
+  if (opts.freeAngle !== true) ang = Math.round(ang / (Math.PI / 12)) * (Math.PI / 12);
+  const L = Math.max(min, Math.round(Math.hypot(p.x - a.x, p.y - a.y) / step) * step);
+  return { x: a.x + Math.cos(ang) * L, y: a.y + Math.sin(ang) * L, length: L, hint: null, attached: false };
 }
