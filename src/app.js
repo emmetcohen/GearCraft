@@ -20,6 +20,7 @@ import { Camera, Renderer } from './render/renderer.js';
 import { buildGallery } from './ui/gallery.js';
 import { Panel } from './ui/panel.js';
 import { showReadout } from './ui/readout.js';
+import { History } from './core/history.js';
 
 const ROTATE_STEP = Math.PI / 12; // 15°
 
@@ -39,6 +40,7 @@ export class App {
     this.placedAt = new Map();  // uid -> time placed (for the squash animation)
     this.analysis = null;       // cached edit-mode assembly + gear train
     this.listeners = [];        // (event) => void, for modes/panels
+    this.history = new History();
   }
 
   // =============================================================== startup ==
@@ -62,6 +64,7 @@ export class App {
     this.renderer.resize();
     document.fonts?.ready.then(() => this.gallery.redraw());
 
+    this.history.reset(this.build);
     this.changed();
     let last = performance.now(), acc = 0;
     const frame = (now) => {
@@ -92,7 +95,22 @@ export class App {
 
   /** The build changed in a way worth an undo step. */
   commit() {
+    this.history.push(this.build);
     this.changed();
+    this.emit('history');
+  }
+
+  undo() { this._travel(() => this.history.undo(), 'Nothing to undo'); }
+  redo() { this._travel(() => this.history.redo(), 'Nothing to redo'); }
+
+  _travel(step, emptyMsg) {
+    if (!this.editable) { this.toast('Press ⟲ Reset first, then undo'); return; }
+    const build = step();
+    if (!build) { this.toast(emptyMsg); return; }
+    this.build = build;
+    if (this.selectedUid != null && !findPart(build, this.selectedUid)) this.select(null);
+    this.changed();
+    this.emit('history');
   }
 
   get editable() { return this.state === 'edit'; }
@@ -174,12 +192,12 @@ export class App {
     this.emit('select');
   }
 
-  /** Replace the whole build (load, undo...). */
+  /** Replace the whole build (e.g. loading a save). Undoable. */
   setBuild(build) {
     if (this.state !== 'edit') this.reset();
     this.build = build;
     this.select(null);
-    this.changed();
+    this.commit();
   }
 
   // ============================================================ play state ==
@@ -354,6 +372,27 @@ export class App {
     $('btn-zoom-in').addEventListener('click', () => this.camera.zoomAt(this.camera.w / 2, this.camera.h / 2, 1.25));
     $('btn-zoom-out').addEventListener('click', () => this.camera.zoomAt(this.camera.w / 2, this.camera.h / 2, 0.8));
     $('btn-home').addEventListener('click', () => this.recenter());
+
+    // Undo / redo buttons live in the top bar's edit-tools group.
+    const tools = $('edit-tools');
+    const mk = (label, title, fn) => {
+      const b = document.createElement('button');
+      b.className = 'btn';
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener('click', fn);
+      tools.appendChild(b);
+      return b;
+    };
+    const undoBtn = mk('↶ Undo', 'Undo (Ctrl/⌘+Z)', () => this.undo());
+    const redoBtn = mk('↷ Redo', 'Redo (Ctrl/⌘+Shift+Z)', () => this.redo());
+    this.addTopbarButton = mk;
+    const syncHistory = () => {
+      undoBtn.disabled = !this.editable || !this.history.canUndo;
+      redoBtn.disabled = !this.editable || !this.history.canRedo;
+    };
+    this.on((type) => { if (type === 'history' || type === 'state') syncHistory(); });
+    syncHistory();
     const sync = () => {
       $('btn-play').disabled = this.state === 'playing';
       $('btn-pause').disabled = this.state !== 'playing';
@@ -529,7 +568,13 @@ export class App {
       if (e.target.closest('input, textarea, dialog')) return;
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
-      if (k === ' ') {
+      if (mod && k === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) this.redo(); else this.undo();
+      } else if (mod && k === 'y') {
+        e.preventDefault();
+        this.redo();
+      } else if (k === ' ') {
         e.preventDefault();
         if (this.state === 'playing') this.pause(); else this.play();
       } else if (k === 'escape') {
