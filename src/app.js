@@ -21,6 +21,8 @@ import { buildGallery } from './ui/gallery.js';
 import { Panel } from './ui/panel.js';
 import { showReadout } from './ui/readout.js';
 import { History } from './core/history.js';
+import { autosave, loadAutosave } from './save/storage.js';
+import { createSaveDialog } from './ui/saveDialog.js';
 
 const ROTATE_STEP = Math.PI / 12; // 15°
 
@@ -64,6 +66,14 @@ export class App {
     this.renderer.resize();
     document.fonts?.ready.then(() => this.gallery.redraw());
 
+    // Pick up where you left off, or start with the mode's starter build.
+    const saved = loadAutosave();
+    if (saved) this.build = saved;
+    else if (this.mode.starter) {
+      const st = this.mode.starter();
+      this.build = st.build;
+      if (st.camera) Object.assign(this.camera, st.camera);
+    }
     this.history.reset(this.build);
     this.changed();
     let last = performance.now(), acc = 0;
@@ -96,6 +106,9 @@ export class App {
   /** The build changed in a way worth an undo step. */
   commit() {
     this.history.push(this.build);
+    // Autosave shortly after edits settle.
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => autosave(this.build), 400);
     this.changed();
     this.emit('history');
   }
@@ -345,7 +358,17 @@ export class App {
     // Readout card beside the selected part.
     if (this.selectedUid != null && this.transformOf(this.selectedUid)) {
       const t = this.transformOf(this.selectedUid);
-      const s = this.camera.worldToScreen(t.x, t.y);
+      let s = this.camera.worldToScreen(t.x, t.y);
+      // While running, gently keep the selected part in view (select your
+      // car's chassis and the camera follows it). Not while you're dragging.
+      if (this.state === 'playing' && !this.drag) {
+        const cam = this.camera, mx = cam.w * 0.25, my = cam.h * 0.25;
+        const dx = s.x < mx ? s.x - mx : s.x > cam.w - mx ? s.x - (cam.w - mx) : 0;
+        const dy = s.y < my ? s.y - my : s.y > cam.h - my ? s.y - (cam.h - my) : 0;
+        cam.x += (dx / cam.zoom) * 0.15;
+        cam.y -= (dy / cam.zoom) * 0.15;
+        s = cam.worldToScreen(t.x, t.y);
+      }
       showReadout(this.readoutEl, this.readoutFor(this.selectedUid), s);
     } else {
       showReadout(this.readoutEl, null);
@@ -387,6 +410,16 @@ export class App {
     const undoBtn = mk('↶ Undo', 'Undo (Ctrl/⌘+Z)', () => this.undo());
     const redoBtn = mk('↷ Redo', 'Redo (Ctrl/⌘+Shift+Z)', () => this.redo());
     this.addTopbarButton = mk;
+    const saveDialog = createSaveDialog(this);
+    this.openSaveDialog = () => saveDialog.open();
+    mk('💾 Save / Load', 'Save, load, examples, export & import (Ctrl/⌘+S)', () => saveDialog.open());
+    const clearBtn = mk('🧹 Clear', 'Start a new empty build (undoable)', () => {
+      if (!this.build.parts.length) return;
+      this.setBuild(emptyBuild());
+      this.currentName = null;
+      this.toast('Cleared. Undo brings it back.');
+    });
+    this.on((type) => { if (type === 'state') clearBtn.disabled = !this.editable; });
     const syncHistory = () => {
       undoBtn.disabled = !this.editable || !this.history.canUndo;
       redoBtn.disabled = !this.editable || !this.history.canRedo;
@@ -571,6 +604,9 @@ export class App {
       if (mod && k === 'z') {
         e.preventDefault();
         if (e.shiftKey) this.redo(); else this.undo();
+      } else if (mod && k === 's') {
+        e.preventDefault();
+        this.openSaveDialog();
       } else if (mod && k === 'y') {
         e.preventDefault();
         this.redo();

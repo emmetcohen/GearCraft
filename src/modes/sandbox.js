@@ -14,6 +14,7 @@
 // =============================================================================
 import { getDef } from '../parts/partDefs.js';
 import { findPart } from '../core/build.js';
+import { EXAMPLES } from '../save/examples.js';
 
 export const sandboxMode = {
   id: 'sandbox',
@@ -23,6 +24,12 @@ export const sandboxMode = {
   // Sandbox allows every part, and anchors can go ANYWHERE on the map.
   partFilter: () => true,
   autoPinType: 'pin-rotating',
+
+  /** First visit (no autosave yet): start with a small demo machine. */
+  starter() {
+    const ex = EXAMPLES[0];
+    return { build: ex.build(), camera: ex.camera };
+  },
 
   setup(app) {
     const { panel } = app;

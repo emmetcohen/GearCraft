@@ -4,6 +4,9 @@ import { emptyBuild, addPart } from '../src/core/build.js';
 import { buildAssembly, WORLD, mainKey } from '../src/physics/assembly.js';
 import { solveGearTrain } from '../src/physics/gearTrain.js';
 import { Simulation, radToRpm, DT } from '../src/physics/world.js';
+import { EXAMPLES } from '../src/save/examples.js';
+import { toFile, fromFile } from '../src/save/storage.js';
+import { findMeshes } from '../src/physics/gearTrain.js';
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -206,6 +209,57 @@ test('hand crank: dragging the handle turns the gear train', () => {
     sim.step();
   }
   near(sim.readout(out.uid).rpm, radToRpm(-1), 3, 'output follows half the hand speed, reversed');
+});
+
+
+console.log('\nStep 5 — save/load + examples');
+
+test('file export/import round-trips a build exactly', () => {
+  const { b } = sliceBuild();
+  b.parts[0].props.reverse = true;
+  const text = JSON.stringify(toFile(b, 'test'));
+  const { build, dropped, name } = fromFile(text);
+  assert(dropped === 0 && name === 'test', 'metadata');
+  assert(JSON.stringify(build.parts) === JSON.stringify(b.parts), 'parts should match');
+});
+
+test('import skips unknown part types instead of crashing', () => {
+  const { build, dropped } = fromFile({ build: { parts: [{ uid: 1, type: 'gear-12', x: 0, y: 0 }, { uid: 2, type: 'flux-capacitor', x: 1, y: 1 }] } });
+  assert(build.parts.length === 1 && dropped === 1, 'one kept, one dropped');
+  let threw = false; try { fromFile('{"nope":1}'); } catch { threw = true; }
+  assert(threw, 'garbage should throw a friendly error');
+});
+
+test('gear-train example: chain ratio to the last wheel is -0.375', () => {
+  const b = EXAMPLES[0].build();
+  const wheel = b.parts.find((p) => p.type === 'wheel-s');
+  // 12→24(-0.5), 12→24(+0.25), 24→8(-0.75), 8→16(+0.375), 16→16(-0.375)
+  near(driveRatio(b, wheel.uid).ratio, -0.375, 1e-9, 'ratio');
+});
+
+test('example "Little car": drives right and gets over the ramp', () => {
+  const b = EXAMPLES[1].build();
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 10);
+  const t = sim.transformOf(b.parts[0].uid);
+  assert(t.x > 16, `chassis should be past the ramp, x = ${t.x.toFixed(1)}`);
+});
+
+for (const ex of EXAMPLES) {
+  test(`example "${ex.name}" builds and runs without errors`, () => {
+    const b = ex.build();
+    const asm = buildAssembly(b.parts);
+    assert(asm.warnings.length === 0, asm.warnings.join('; '));
+    const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1);
+    for (const p of b.parts) { const t = sim.transformOf(p.uid); assert(Number.isFinite(t.x) && Number.isFinite(t.y), `${p.type} NaN`); }
+  });
+}
+
+test('example "Torque test": direct arm stalls, geared arm lifts', () => {
+  const b = EXAMPLES[2].build();
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 2);
+  assert(sim.telemetry.get(b.parts[0].uid).stalled, 'direct motor stalls');
+  assert(!sim.telemetry.get(b.parts[3].uid).stalled, 'geared motor keeps going');
+  assert(sim.transformOf(b.parts[8].uid).angle > 0.5, 'geared arm rose');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

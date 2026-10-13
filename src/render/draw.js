@@ -67,11 +67,11 @@ function gearPath(ctx, teeth, r) {
   ctx.beginPath();
   for (let i = 0; i < teeth; i++) {
     const a = i * step; // a tooth is centred on angle a
-    ctx.arc(0, 0, rr, a - step * 0.5, a - step * 0.27);
-    ctx.lineTo(ro * Math.cos(a - step * 0.16), ro * Math.sin(a - step * 0.16));
-    ctx.arc(0, 0, ro, a - step * 0.16, a + step * 0.16);
-    ctx.lineTo(rr * Math.cos(a + step * 0.27), rr * Math.sin(a + step * 0.27));
-    ctx.arc(0, 0, rr, a + step * 0.27, a + step * 0.5);
+    ctx.arc(0, 0, rr, a - step * 0.5, a - step * 0.30);
+    ctx.lineTo(ro * Math.cos(a - step * 0.20), ro * Math.sin(a - step * 0.20));
+    ctx.arc(0, 0, ro, a - step * 0.20, a + step * 0.20);
+    ctx.lineTo(rr * Math.cos(a + step * 0.30), rr * Math.sin(a + step * 0.30));
+    ctx.arc(0, 0, rr, a + step * 0.30, a + step * 0.5);
   }
   ctx.closePath();
 }
