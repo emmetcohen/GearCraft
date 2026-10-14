@@ -9,7 +9,7 @@ import { toFile, fromFile } from '../src/save/storage.js';
 import { findMeshes } from '../src/physics/gearTrain.js';
 import { snapPart, snapDrawEnd } from '../src/parts/snap.js';
 import { socketsOf } from '../src/parts/geometry.js';
-import { partDef } from '../src/parts/partDefs.js';
+import { partDef, faceHoles } from '../src/parts/partDefs.js';
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -579,6 +579,72 @@ test('follow: the camera picks the car chassis, not a gear spinning on a pin', (
   assert(sim.autoFollowTarget() === chassis.uid, `picked ${sim.autoFollowTarget()}`);
   const s2 = new Simulation(sliceBuild().b, SETTINGS, MAP);
   assert(s2.autoFollowTarget() === null, 'nothing free-moving: no follow');
+});
+
+
+console.log('\nEndless map, loose ropes, bolting onto gears');
+
+test('endless map: the ground is still there 2 km away', () => {
+  const b = emptyBuild();
+  const ball = addPart(b, 'ball-s', 2000, 3);
+  const sim = new Simulation(b, SETTINGS, { groundHalfWidth: Infinity }); run(sim, 2);
+  near(sim.transformOf(ball.uid).y, 0.5, 0.05, 'ball rests on the ground');
+});
+
+test('gear face holes: a beam bolted on a driven gear swings round with it', () => {
+  const b = emptyBuild();
+  addPart(b, 'motor', 0, 6); const g = addPart(b, 'gear-24', 0, 6);
+  const ring = faceHoles(partDef(g))[0][0];                       // 1.4 for a 24T
+  const arm = addPart(b, 'beam', ring + 1.6, 6, 0, { length: 3.2 }); // left end on the right-hand hole
+  const asm = buildAssembly(b.parts);
+  assert(asm.bodyOf(mainKey(arm.uid)) === asm.bodyOf(mainKey(g.uid)), 'arm is bolted to the gear');
+  assert(asm.warnings.length === 0, asm.warnings.join('; '));
+  const sim = new Simulation(b, { ...SETTINGS, motorTorque: 300 }, MAP); run(sim, 1);
+  const t = sim.transformOf(arm.uid);
+  near(Math.hypot(t.x, t.y - 6), ring + 1.6, 0.05, 'arm stays the same distance from the gear centre');
+  assert(Math.abs(t.angle) > 0.5, `arm turned with the gear (angle ${t.angle.toFixed(2)})`);
+});
+
+test('gear face holes: a hinge there makes a crank (the beam pivots)', () => {
+  const b = emptyBuild();
+  addPart(b, 'pin-fixed', 0, 6); const g = addPart(b, 'gear-24', 0, 6, 0, { anchored: true });
+  const ring = faceHoles(partDef(g))[0][0];
+  addPart(b, 'hinge', ring, 6);
+  const arm = addPart(b, 'beam', ring + 1.6, 6, 0, { length: 3.2 });
+  const asm = buildAssembly(b.parts);
+  assert(asm.bodyOf(mainKey(arm.uid)) !== asm.bodyOf(mainKey(g.uid)), 'not bolted');
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 0.6);
+  assert(sim.transformOf(arm.uid).angle < -0.3, 'arm swings down on the hinge');
+});
+
+test('gear face holes: a beam through the gear centre doesn\'t steal its axle', () => {
+  const b = emptyBuild();
+  addPart(b, 'motor', 0, 6); const g = addPart(b, 'gear-24', 0, 6);
+  const ring = faceHoles(partDef(g))[0][0];
+  addPart(b, 'beam', 0, 6, 0, { length: ring * 2 });                // hole to hole, across the centre
+  const asm = buildAssembly(b.parts);
+  assert(asm.warnings.length === 0, asm.warnings.join('; '));
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1);
+  near(sim.readout(g.uid).rpm, 30, 1, 'gear still driven');
+});
+
+test('gear face holes: grid beams on a gearbox don\'t bolt to gears by accident', () => {
+  const { b } = carBuild(true);                                     // 24T + 12T sitting on the chassis beam
+  const asm = buildAssembly(b.parts);
+  const g24 = b.parts.find((p) => p.type === 'gear-24');
+  assert(asm.axleOf(asm.bodyOf(mainKey(g24.uid))), '24T still spins on the chassis');
+});
+
+test('loose rope: unanchored, the free end hangs on a hook below its top', () => {
+  const b = emptyBuild();
+  addPart(b, 'beam', 0, 8, 0, { length: 4, anchored: true });
+  const rope = addPart(b, 'rope', 3, 8, 0, { length: 2, pinEnds: false }); // (2,8) on the beam → (4,8) in the air
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 3);
+  assert(sim.hookEnds(rope.uid).length === 1, 'one hooked end');
+  const [top, end] = sim.linkEnds(rope.uid);
+  near(Math.hypot(end.x - top.x, end.y - top.y), 2, 0.08, 'rope pulled taut by the hook');
+  assert(end.y < 7, `hook swung down below the beam (y ${end.y.toFixed(2)})`);
+  near(top.y, 8, 1e-6, 'top end stays on the beam');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

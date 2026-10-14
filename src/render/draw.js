@@ -9,7 +9,7 @@
 // The same functions draw the gallery thumbnails and the world, so a part
 // always looks the same everywhere.
 // =============================================================================
-import { MODULE, OUTLINE, gearLayers } from '../parts/partDefs.js';
+import { MODULE, OUTLINE, gearLayers, faceHoles } from '../parts/partDefs.js';
 import { beamHoleOffsets } from '../parts/geometry.js';
 
 // ---------------------------------------------------------------- colours --
@@ -89,7 +89,21 @@ function axleHole(ctx, px, s = 0.16) {
   ctx.stroke();
 }
 
-function drawOneGear(ctx, px, teeth, r, fill) {
+/** Bolt holes you can attach beams to: a dark hole in a light ring. */
+function boltHoles(ctx, px, holes, fill) {
+  for (const [x, y] of holes) {
+    circle(ctx, x, y, 0.15);
+    ctx.fillStyle = shade(fill, 0.3);
+    ctx.fill();
+    outline(ctx, px, 1.5);
+    ctx.stroke();
+    circle(ctx, x, y, 0.085);
+    ctx.fillStyle = '#3d3456';
+    ctx.fill();
+  }
+}
+
+function drawOneGear(ctx, px, teeth, r, fill, holesAt = null) {
   gearPath(ctx, teeth, r);
   ctx.fillStyle = fill;
   ctx.fill();
@@ -101,13 +115,16 @@ function drawOneGear(ctx, px, teeth, r, fill) {
   ctx.fill();
   ctx.lineWidth = 1.5 / px;
   ctx.stroke();
-  const holes = r >= 1.5 ? 5 : 3;
-  const hr = Math.min(0.24, r * 0.16);
-  ctx.fillStyle = shade(fill, -0.32);
-  for (let i = 0; i < holes; i++) {
-    const a = (i / holes) * Math.PI * 2 + Math.PI / 2;
-    circle(ctx, Math.cos(a) * r * 0.5, Math.sin(a) * r * 0.5, hr);
-    ctx.fill();
+  if (holesAt?.length) boltHoles(ctx, px, holesAt, fill);
+  else {
+    const holes = r >= 1.5 ? 5 : 3;
+    const hr = Math.min(0.24, r * 0.16);
+    ctx.fillStyle = shade(fill, -0.32);
+    for (let i = 0; i < holes; i++) {
+      const a = (i / holes) * Math.PI * 2 + Math.PI / 2;
+      circle(ctx, Math.cos(a) * r * 0.5, Math.sin(a) * r * 0.5, hr);
+      ctx.fill();
+    }
   }
   circle(ctx, 0, 0, Math.min(0.34, r * 0.32));
   ctx.fillStyle = shade(fill, 0.35);
@@ -144,7 +161,7 @@ export function keyLabel(key) {
 const painters = {
   gear(ctx, def, px, fill) {
     const [g] = gearLayers(def);
-    drawOneGear(ctx, px, g.teeth, g.r, fill);
+    drawOneGear(ctx, px, g.teeth, g.r, fill, faceHoles(def));
     axleHole(ctx, px);
   },
 
@@ -179,12 +196,23 @@ const painters = {
     ctx.fill();
     outline(ctx, px, 2.5);
     ctx.stroke();
+    const bolts = faceHoles(def);
     ctx.fillStyle = shade(fill, -0.45);
-    const holes = r > 1.2 ? 6 : 4;
-    for (let i = 0; i < holes; i++) {
-      const a = (i / holes) * Math.PI * 2;
-      circle(ctx, Math.cos(a) * r * 0.55, Math.sin(a) * r * 0.55, r * 0.2);
-      ctx.fill();
+    if (bolts.length) {
+      // Cut-outs between the bolt holes, then the holes themselves.
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+        circle(ctx, Math.cos(a) * r * 0.55, Math.sin(a) * r * 0.55, r * 0.16);
+        ctx.fill();
+      }
+      boltHoles(ctx, px, bolts, fill);
+    } else {
+      const holes = r > 1.2 ? 6 : 4;
+      for (let i = 0; i < holes; i++) {
+        const a = (i / holes) * Math.PI * 2;
+        circle(ctx, Math.cos(a) * r * 0.55, Math.sin(a) * r * 0.55, r * 0.2);
+        ctx.fill();
+      }
     }
     circle(ctx, 0, 0, Math.min(0.3, r * 0.35));
     ctx.fillStyle = shade(fill, 0.3);

@@ -20,7 +20,7 @@ export class Camera {
   /** Zoom around a screen point so the thing under the cursor stays put. */
   zoomAt(sx, sy, factor) {
     const before = this.screenToWorld(sx, sy);
-    this.zoom = Math.max(8, Math.min(160, this.zoom * factor));
+    this.zoom = Math.max(2.5, Math.min(160, this.zoom * factor));
     const after = this.screenToWorld(sx, sy);
     this.x += before.x - after.x;
     this.y += before.y - after.y;
@@ -189,7 +189,8 @@ export class Renderer {
       ctx.stroke();
     };
     if (camera.zoom > 28 && scene.mode === 'edit' && scene.grid !== false) drawGrid(0.4, 'rgba(43,33,64,0.05)', 1);
-    drawGrid(2, 'rgba(43,33,64,0.09)', 1);
+    // Zoomed far out, space the bold lines further apart so they don't blur together.
+    drawGrid(camera.zoom > 10 ? 2 : camera.zoom > 4 ? 10 : 20, 'rgba(43,33,64,0.09)', 1);
 
     // Ground: grass strip on dirt, top at y = 0, out to ±halfWidth.
     const half = scene.map.groundHalfWidth;
@@ -200,7 +201,8 @@ export class Renderer {
       ctx.fillRect(left, g0.y, right - left, H - g0.y + 10);
       // Pebbles (deterministic so they don't flicker).
       ctx.fillStyle = '#8a5e3c';
-      for (let wx = Math.floor(tl.x); wx < br.x; wx += 1) {
+      const pstep = camera.zoom > 8 ? 1 : 4;
+      for (let wx = Math.floor(tl.x / pstep) * pstep; wx < br.x; wx += pstep) {
         const h = Math.sin(wx * 12.9898) * 43758.5453;
         const f = h - Math.floor(h);
         const s = camera.worldToScreen(wx + f, -0.6 - f * 2);
@@ -241,6 +243,21 @@ export class Renderer {
     for (const e of scene.skyPins || []) {
       const s = camera.worldToScreen(e.x, e.y);
       drawPart(ctx, getDef('pin-fixed'), { sx: s.x, sy: s.y, angle: 0 }, Math.max(px, 30) * 0.7, {});
+    }
+
+    // Loose (unanchored) rope/spring ends: a little hook.
+    for (const e of scene.hooks || []) {
+      const s = camera.worldToScreen(e.x, e.y);
+      const r = Math.max(4, 0.16 * px);
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(s.x, s.y + r * 1.4, r, Math.PI * 0.9, Math.PI * 0.1, true);
+      ctx.moveTo(s.x + r, s.y + r * 1.4); ctx.lineTo(s.x + r, s.y + r * 0.2);
+      ctx.moveTo(s.x, s.y); ctx.lineTo(s.x + r, s.y + r * 0.3);
+      ctx.strokeStyle = OUTLINE; ctx.lineWidth = 5; ctx.stroke();
+      ctx.strokeStyle = '#c9ced6'; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.restore();
     }
 
     // Joint markers (edit mode): what each shared point does.

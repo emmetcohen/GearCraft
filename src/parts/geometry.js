@@ -8,7 +8,7 @@
 // Nothing here touches the DOM or the physics engine, so it can be unit
 // tested in Node and reused by every mode.
 // =============================================================================
-import { getDef, partDef, gearLayers, HOLE_SPACING, MODULE, roleOf } from './partDefs.js';
+import { getDef, partDef, gearLayers, faceHoles, HOLE_SPACING, MODULE, roleOf } from './partDefs.js';
 
 /** Rotate a local point (lx, ly) by `angle` and move it to (x, y). */
 export function localToWorld(x, y, angle, lx, ly) {
@@ -63,6 +63,8 @@ export function lineFrom(a, b) {
  *  - beams: every hole (sliders: their two end holes)
  *  - everything else with a role (rotors, drivers, connectors): its centre
  *  - drive wheels: also a crank PIN off-centre (pivot: anything there pivots)
+ *  - gears/sprockets: four face holes (bolt: things there are bolted on,
+ *    or pivot if there's a hinge)
  *  - sliders: also the sliding block (sub 'hub', pivot)
  *  - loose objects and links: none
  * `sub` says which element of the part the socket belongs to ('main' or 'hub').
@@ -85,6 +87,10 @@ export function socketsOf(part) {
   if (def.pinOffset) {
     out.push({ ...localToWorld(part.x, part.y, part.angle, def.pinOffset, 0), index: 1, sub: 'main', pivot: true });
   }
+  // Gear/sprocket face holes: whatever goes on them is BOLTED to the gear.
+  faceHoles(def).forEach(([lx, ly], i) => {
+    out.push({ ...localToWorld(part.x, part.y, part.angle, lx, ly), index: 2 + i, sub: 'main', pivot: true, bolt: true });
+  });
   return out;
 }
 

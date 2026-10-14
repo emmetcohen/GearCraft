@@ -304,6 +304,23 @@ export function gearLayers(def) {
   return [];
 }
 
+/**
+ * Bolt holes on a gear's or sprocket's face (local offsets). A beam put on
+ * one is bolted to the gear and turns with it; add a hinge there and it
+ * pivots instead (a crank). Four holes on a ring whose radius is a whole
+ * number of holes PLUS half a hole, so a beam running through the gear's
+ * centre never lands on them by accident.
+ */
+export function faceHoles(def) {
+  let r;
+  if (def.kind === 'gear') r = pitchRadius(def.teeth) * 0.62;
+  else if (def.kind === 'sprocket') r = def.radius * 0.7;
+  else return [];
+  const ring = Math.floor((r - HOLE_SPACING / 2) / HOLE_SPACING) * HOLE_SPACING + HOLE_SPACING / 2;
+  if (ring < 0.5) return []; // too small for holes
+  return [[ring, 0], [0, ring], [-ring, 0], [0, -ring]];
+}
+
 /** Tooth count a chain sees on this part (sprockets and gears), or 0. */
 export function chainTeeth(def) {
   if (def.kind === 'sprocket' || def.kind === 'gear') return def.teeth;

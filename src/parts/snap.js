@@ -21,6 +21,7 @@ const roundTo = (v, step) => Math.round(v / step) * step;
 
 /** Human-friendly description of what a socket belongs to. */
 function socketLabel(def, socket) {
+  if (socket?.bolt) return 'on gear hole';
   if (socket?.pivot) return def.kind === 'slider' ? 'on slider block' : 'on crank pin';
   switch (def.kind) {
     case 'motor': return 'on motor shaft';
@@ -83,10 +84,11 @@ export function doubleMesh(others, def, x, y, angle) {
 }
 
 /** Nearest socket of `others` to (x, y) within `radius`. */
-function nearestSocket(others, x, y, radius) {
+function nearestSocket(others, x, y, radius, opts = {}) {
   let best = null;
   for (const part of others) {
     for (const s of socketsOf(part)) {
+      if (opts.noBolt && s.bolt) continue;
       const d = Math.hypot(s.x - x, s.y - y);
       if (d < radius && (!best || d < best.d)) best = { x: s.x, y: s.y, d, part, socket: s };
     }
@@ -157,8 +159,9 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
     return out;
   }
 
-  // Rotors, drivers, connectors: snap the centre onto a socket.
-  const s = nearestSocket(others, x, y, SOCKET_SNAP);
+  // Rotors, drivers, connectors: snap the centre onto a socket. (Gears and
+  // motors skip gear face holes, so meshing near another gear still works.)
+  const s = nearestSocket(others, x, y, SOCKET_SNAP, { noBolt: role === 'rotor' || role === 'driver' });
   if (s) {
     out = { x: s.x, y: s.y, angle, hint: socketLabel(getDef(s.part.type), s.socket) };
   } else if ((def.kind === 'gear' || def.kind === 'compoundGear') && (out = doubleMesh(others, def, x, y, angle))) {

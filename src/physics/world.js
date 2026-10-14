@@ -74,7 +74,7 @@ export class Simulation {
   /**
    * @param build    the build (plain data, not modified)
    * @param settings { gravity, friction, motorTorque, motorRpm }
-   * @param map      { groundHalfWidth } from the game mode
+   * @param map      { groundHalfWidth } from the game mode (Infinity = endless)
    */
   constructor(build, settings, map) {
     this.parts = build.parts.map((p) => ({ ...p, props: { ...p.props } }));
@@ -114,7 +114,9 @@ export class Simulation {
     const ground = this.world.createBody({ type: 'static' });
     this.bodies.set(WORLD, ground);
     this.ground = ground;
-    const half = map.groundHalfWidth;
+    // groundHalfWidth: Infinity = endless ground. Box2D needs a finite shape,
+    // so "endless" is a million metres each way (days of driving).
+    const half = Number.isFinite(map.groundHalfWidth) ? map.groundHalfWidth : 1e6;
     // The flat ground: a wide box whose top surface is y = 0.
     this._addFixture(ground, Box(half, 5, Vec2(0, -5), 0), { friction: 1, cat: CAT.GROUND });
 
@@ -265,7 +267,7 @@ export class Simulation {
   }
 
   /** The body under a world point: a part with a socket there first, then
-   *  any shape there (crates, beams...), otherwise the background. */
+   *  any shape there (crates, beams...), otherwise null. */
   _bodyAt(pt) {
     for (const part of this.parts) {
       for (const s of socketsOf(part)) {
@@ -286,7 +288,7 @@ export class Simulation {
       });
       if (found) return found;
     }
-    return this.ground;
+    return null;
   }
 
   /** Springs and ropes: each end grabs whatever it touches. */
@@ -295,8 +297,13 @@ export class Simulation {
       const def = partDef(part);
       if (def.kind !== 'spring' && def.kind !== 'rope') continue;
       const [e1, e2] = lineEnds(part);
-      const bodyA = this._bodyAt(e1), bodyB = this._bodyAt(e2);
-      const link = { bodyA, la: bodyA.getLocalPoint(Vec2(e1.x, e1.y)), bodyB, lb: bodyB.getLocalPoint(Vec2(e2.x, e2.y)), joint: null };
+      // An end touching nothing is pinned to the background, unless the
+      // Screwdriver unanchored it: then it hangs free with a little hook.
+      const free = part.props.pinEnds === false;
+      const endBody = (e) => this._bodyAt(e) || (free ? this._hook(e) : this.ground);
+      const bodyA = endBody(e1), bodyB = endBody(e2);
+      const link = { bodyA, la: bodyA.getLocalPoint(Vec2(e1.x, e1.y)), bodyB, lb: bodyB.getLocalPoint(Vec2(e2.x, e2.y)), joint: null,
+        hooks: [bodyA.isHook ? 0 : -1, bodyB.isHook ? 1 : -1].filter((i) => i >= 0) };
       this.links.set(part.uid, link);
       if (bodyA === bodyB) continue;
       if (def.kind === 'spring') {
@@ -387,6 +394,17 @@ export class Simulation {
     return this.parts.filter((p) => getDef(p.type).kind === 'keyButton' &&
       (isLegacyKey(p) ? p.props.key === key : Object.values(keyControlKeys(p)).includes(key))).map((p) => p.uid);
   }
+
+  /** A small free weight on the loose end of an unanchored rope/spring. */
+  _hook(e) {
+    const body = this.world.createBody({ type: 'dynamic', position: Vec2(e.x, e.y), linearDamping: 0.4 });
+    this._addFixture(body, Circle(Vec2(0, 0), 0.16), { density: 0.3 / (Math.PI * 0.16 ** 2), friction: 0.6, cat: CAT.OBJECT });
+    body.isHook = true;
+    return body;
+  }
+
+  /** Which ends (0, 1) of a rope/spring hang free on a hook. */
+  hookEnds(uid) { return this.links.get(uid)?.hooks ?? []; }
 
   /** Current world positions of a spring's or rope's two ends. */
   linkEnds(uid) {

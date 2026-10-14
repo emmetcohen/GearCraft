@@ -597,8 +597,13 @@ export class App {
     let joints = null;
     const badChains = new Set();
     const skyPins = [];
+    const hooks = []; // loose rope/spring ends (unanchored)
 
     if (this.sim) {
+      for (const [uid] of this.sim.links) {
+        const ends = this.sim.linkEnds(uid);
+        for (const i of this.sim.hookEnds(uid)) hooks.push(ends[i]);
+      }
       for (const [uid, t] of this.sim.telemetry) {
         if (!t.stalled) continue;
         const tr = this.sim.transformOf(uid);
@@ -616,7 +621,7 @@ export class App {
         if (k !== 'spring' && k !== 'rope') continue;
         for (const e of lineEnds(p)) {
           const onSocket = solid.some((q) => socketsOf(q).some((so) => Math.hypot(so.x - e.x, so.y - e.y) < 0.12));
-          if (!onSocket && !pickPart(solid, e.x, e.y)) skyPins.push(e);
+          if (!onSocket && !pickPart(solid, e.x, e.y)) (p.props.pinEnds === false ? hooks : skyPins).push(e);
         }
       }
       for (const uid of train.floatingGears) {
@@ -672,7 +677,7 @@ export class App {
       showSockets: !!placing,
       wiresStrong: editing && this.tool === 'wire' && !this.armedType,
       marquee: d?.kind === 'marquee' && d.moved ? { ...d.box, del: this.tool === 'delete' } : null,
-      handles, handleLabel, rotateGizmo, joints, badChains, skyPins,
+      handles, handleLabel, rotateGizmo, joints, badChains, skyPins, hooks,
       meshes, labels,
     });
 

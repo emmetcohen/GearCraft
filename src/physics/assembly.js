@@ -74,7 +74,7 @@ export function findClusters(parts) {
     for (const s of socketsOf(part)) {
       let c = clusters.find((cl) => Math.hypot(cl.x - s.x, cl.y - s.y) < CLUSTER_TOL);
       if (!c) { c = { x: s.x, y: s.y, uids: [], pivots: [] }; clusters.push(c); }
-      if (s.pivot) c.pivots.push({ uid: part.uid, sub: s.sub });
+      if (s.pivot) c.pivots.push({ uid: part.uid, sub: s.sub, bolt: !!s.bolt });
       else if (!c.uids.includes(part.uid)) c.uids.push(part.uid);
     }
   }
@@ -202,12 +202,14 @@ export function buildAssembly(parts) {
     }
 
     // Pivot sockets (crank pins, slider blocks) pivot on whatever is here.
-    const pivotKeys = cl.pivots.map((pv) => (pv.sub === 'hub' ? hubKey(pv.uid) : mainKey(pv.uid)));
+    // Gear face holes ("bolt") bolt it on instead, unless there's a hinge or
+    // a rotating pin here.
+    const pivotKeys = cl.pivots.map((pv) => ({ key: pv.sub === 'hub' ? hubKey(pv.uid) : mainKey(pv.uid), bolt: pv.bolt }));
     if (pivotKeys.length) {
-      const base = freeBeams[0] ?? unit[0] ?? (fixed || rot ? WORLD : pivotKeys[0]);
-      for (const k of pivotKeys) {
+      const base = freeBeams[0] ?? unit[0] ?? (fixed || rot ? WORLD : pivotKeys[0].key);
+      for (const { key: k, bolt } of pivotKeys) {
         if (k === base) continue;
-        if (fixed && base === WORLD) weld(WORLD, k);
+        if ((fixed && base === WORLD) || (bolt && !hinge && !rot)) weld(base, k);
         else pendingRevolutes.push([base, k, cl, null, true]);
       }
     }

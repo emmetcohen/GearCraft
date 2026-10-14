@@ -100,7 +100,9 @@ freely, yellow = driven.
 - A **chain** links two sprockets (or gears) at any distance; both turn the **same** way.
 - **Drive wheels** have a yellow **crank pin**. A beam hole on it always **pivots**: train side rods, pistons, walking legs. A rod hooked on a pin never bolts onto that wheel's other holes.
 - A **slider** is a rail with a sliding block. The rail is bolted to the background unless something holds its end holes; hook a rod from a crank pin onto the block for a piston.
-- **Springs** and **ropes** grab whatever their ends touch (a socket, or any part). An end touching nothing hangs on the background (shown with a little green pin).
+- **Springs** and **ropes** grab whatever their ends touch (a socket, or any part). An end touching nothing is pinned to the background (a little green pin), unless you untick **Anchored** with the Screwdriver: then it hangs free on a hook.
+- **Gears and sprockets have 4 bolt holes** on their face. A beam put on one is **bolted** to the gear and turns with it (arms, flywheels, cranks); put a **hinge** there and the beam **pivots** instead (a connecting rod). The holes sit half a hole off the grid, so a beam running through a gear's centre never bolts on by accident.
+- The sandbox ground is **endless**: drive as far as you like, and zoom far out.
 - **Track** is part of the map: lay roads, hills and bridges; ends snap together.
 - **Controls** (switch, button, key) ride on whatever part they're placed on. A motor with wires only runs while a wired control is on (a control set to *Reverse* runs it backwards); with nothing on it brakes, or spins free if you set that with the Screwdriver.
 - An **anchored** part is bolted to the background. **Collisions: Everything** makes a machine part bump into other machine parts too; **None** makes it a ghost.
