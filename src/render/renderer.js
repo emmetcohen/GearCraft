@@ -33,6 +33,7 @@ function layerOf(def) {
   if (def.kind === 'chain') return 4;
   if (def.kind === 'wire') return 7;
   if (roleOf(def.kind) === 'control') return 5.8;
+  if (def.kind === 'bolt') return 5.9;
   if (def.kind === 'slider') return 1.5; // rail sits on top of the beam it's bolted to
   if (def.kind === 'spring' || def.kind === 'rope') return 5.5;
   if (roleOf(def.kind) === 'beam') return 1;
@@ -67,8 +68,10 @@ export class Renderer {
     const px = camera.zoom;
     // Same layer: bigger rotors first, so a small gear stacked on a big one shows on top.
     const size = (def) => (roleOf(def.kind) === 'rotor' ? -outerRadius(def) : 0);
+    // A beam bolted onto a gear draws on top of the gear.
+    const layer = (x) => (scene.onTop?.has(x.p.uid) ? 3.5 : layerOf(x.def));
     const parts = [...scene.parts].map((p, i) => ({ p, i, def: partDef(p) }))
-      .sort((a, b) => layerOf(a.def) - layerOf(b.def) || size(a.def) - size(b.def) || a.i - b.i);
+      .sort((a, b) => layer(a) - layer(b) || size(a.def) - size(b.def) || a.i - b.i);
     const byUid = new Map(scene.parts.map((p) => [p.uid, p]));
 
     const drawOne = (p, def, layer) => {

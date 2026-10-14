@@ -647,5 +647,40 @@ test('loose rope: unanchored, the free end hangs on a hook below its top', () =>
   near(top.y, 8, 1e-6, 'top end stays on the beam');
 });
 
+
+console.log('\nBolt');
+
+test('bolt: a beam bolted anywhere on a driven gear turns with it', () => {
+  const b = emptyBuild();
+  addPart(b, 'motor', 0, 6); const g = addPart(b, 'gear-32', 0, 6);
+  const arm = addPart(b, 'beam', 2.1, 6.3, 0, { length: 4 });        // not on any hole
+  addPart(b, 'bolt', 1.0, 6.3);                                      // where the beam overlaps the gear
+  const asm = buildAssembly(b.parts);
+  assert(asm.bodyOf(mainKey(arm.uid)) === asm.bodyOf(mainKey(g.uid)), 'bolted into one piece');
+  assert(asm.onRotor.has(arm.uid), 'drawn on top of the gear');
+  const sim = new Simulation(b, { ...SETTINGS, motorTorque: 300 }, MAP); run(sim, 1);
+  assert(Math.abs(sim.transformOf(arm.uid).angle) > 0.5, 'arm turned with the gear');
+});
+
+test('bolt: a beam through the gear centre, bolted on, doesn\'t steal the gear\'s axle', () => {
+  const b = emptyBuild();
+  addPart(b, 'motor', 0, 6); const g = addPart(b, 'gear-24', 0, 6);
+  addPart(b, 'beam', 0, 6, 0, { length: 4 });                         // centre hole on the motor shaft
+  addPart(b, 'bolt', 1.2, 6);
+  const asm = buildAssembly(b.parts);
+  assert(asm.warnings.length === 0, asm.warnings.join('; '));
+  const sim = new Simulation(b, { ...SETTINGS, motorTorque: 300 }, MAP); run(sim, 1);
+  near(sim.readout(g.uid).rpm, 30, 1.5, 'gear still driven, beam along for the ride');
+});
+
+test('bolt: a beam bolted to a crate carries it', () => {
+  const b = emptyBuild();
+  addPart(b, 'beam', 0, 3, 0, { length: 4 }); addPart(b, 'pin-rotating', -2, 3);
+  const crate = addPart(b, 'crate', 1.6, 3); addPart(b, 'bolt', 1.6, 3);
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 0.8);
+  const t = sim.transformOf(crate.uid);
+  near(Math.hypot(t.x + 2, t.y - 3), 3.6, 0.05, 'crate swings on the beam, stuck at the same spot');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

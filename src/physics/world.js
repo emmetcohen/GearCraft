@@ -195,7 +195,7 @@ export class Simulation {
           add(Circle(c, 0.35), 0.4, { cat: CAT.MACHINE, sensor: true, density: 2 });
         }
         break;
-      case 'axle': case 'hinge':
+      case 'axle': case 'hinge': case 'bolt':
         add(Circle(c, 0.16), 0.08, { cat: CAT.MACHINE, sensor: true, density: 1 });
         break;
       case 'switch': case 'button': case 'keyButton':

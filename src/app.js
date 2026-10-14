@@ -36,7 +36,7 @@ const ROTATE_STEP = Math.PI / 12; // 15°
 
 /** Keyboard shortcuts for picking a part to place (edit mode). */
 export const HOTKEYS = {
-  beam: 'B', axle: 'A', hinge: 'H', 'pin-rotating': 'P', 'pin-fixed': 'F',
+  beam: 'B', bolt: 'G', axle: 'A', hinge: 'H', 'pin-rotating': 'P', 'pin-fixed': 'F',
   chain: 'C', spring: 'S', rope: 'O', slider: 'J', track: 'T',
 };
 
@@ -677,6 +677,7 @@ export class App {
       showSockets: !!placing,
       wiresStrong: editing && this.tool === 'wire' && !this.armedType,
       marquee: d?.kind === 'marquee' && d.moved ? { ...d.box, del: this.tool === 'delete' } : null,
+      onTop: (this.sim ? this.sim.assembly : this._analysis().assembly).onRotor,
       handles, handleLabel, rotateGizmo, joints, badChains, skyPins, hooks,
       meshes, labels,
     });

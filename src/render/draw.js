@@ -501,6 +501,27 @@ const painters = {
     ctx.fillRect(-w / 2, -s, w, 2 * s);
   },
 
+  /** A silver hex bolt with a screwdriver slot. */
+  bolt(ctx, def, px, fill) {
+    const r = def.radius;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    circle(ctx, 0, 0, r * 0.55);
+    ctx.fillStyle = shade(fill, 0.35);
+    ctx.fill();
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 2 / px;
+    ctx.beginPath(); ctx.moveTo(-r * 0.4, 0); ctx.lineTo(r * 0.4, 0); ctx.stroke();
+  },
+
   hinge(ctx, def, px, fill) {
     circle(ctx, 0, 0, def.radius);
     ctx.fillStyle = fill;

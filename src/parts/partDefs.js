@@ -121,6 +121,9 @@ export const PARTS = [
   { id: 'axle', name: 'Axle', category: 'structure', kind: 'axle', size: 'S',
     radius: 0.18, mass: 0.1, shape: 'axle', color: '#a2d2ff',
     tip: 'Locks the beams on this point to the gears/wheels, so they all turn together (arms, levers).' },
+  { id: 'bolt', name: 'Bolt', category: 'structure', kind: 'bolt', size: 'S',
+    radius: 0.2, mass: 0.05, shape: 'bolt', color: '#c9ced6',
+    tip: 'Drop it where two parts overlap (a beam over a gear, wheel or crate) and they\'re bolted together: they move and turn as one.' },
   { id: 'hinge', name: 'Hinge', category: 'structure', kind: 'hinge', size: 'S',
     radius: 0.22, mass: 0.1, shape: 'hinge', color: '#3a86ff',
     tip: 'Lets beams on this point pivot freely instead of being bolted together.' },
@@ -281,6 +284,7 @@ export const isDrawn = (def) => !!def.drawn;
  *   connector – joins things at a point (pins, axle, hinge)
  *   link      – ties other parts together without sockets (chain, spring, rope, wire)
  *   control   – switches/buttons/keys: ride on the part under them, wired to motors
+ *   bolt      – locks together every part under it (no sockets needed)
  *   object    – loose test objects (balls, crates) or map pieces (ramps)
  */
 export function roleOf(kind) {
@@ -291,6 +295,7 @@ export function roleOf(kind) {
     case 'axle': case 'hinge': case 'fixedPin': case 'rotPin': return 'connector';
     case 'chain': case 'spring': case 'rope': case 'wire': return 'link';
     case 'switch': case 'button': case 'keyButton': return 'control';
+    case 'bolt': return 'bolt';
     default: return 'object';
   }
 }

@@ -31,12 +31,15 @@
 //   • CONTROLS (switches, buttons, keys) ride on the part under them, or sit
 //     on the background if there's nothing there.
 //   • An ANCHORED part (Screwdriver) is bolted to the background.
+//   • A BOLT locks together every part under it, wherever they overlap.
+//     Parts bolted together don't also join at each other's holes (a beam
+//     bolted onto a gear and running through its centre isn't its axle).
 //
 // Each part becomes one or two ELEMENTS (a motor has a housing AND a spinning
 // hub). Elements are what get welded/jointed.
 // =============================================================================
 import { getDef, roleOf } from '../parts/partDefs.js';
-import { socketsOf, pickPart } from '../parts/geometry.js';
+import { socketsOf, pickPart, partsAt } from '../parts/geometry.js';
 
 export const WORLD = 'world';
 /** Sockets closer than this (world units) are treated as the same point. */
@@ -114,15 +117,38 @@ export function buildAssembly(parts) {
   }
 
   // Controls ride on whatever solid part is under them.
-  const solid = parts.filter((p) => { const r = roleOf(getDef(p.type).kind); return r !== 'link' && r !== 'control'; });
+  const solid = parts.filter((p) => { const r = roleOf(getDef(p.type).kind); return r !== 'link' && r !== 'control' && r !== 'bolt'; });
   for (const part of parts) {
     if (roleOf(getDef(part.type).kind) !== 'control') continue;
     const under = pickPart(solid, part.x, part.y);
     uf.union(under ? mainKey(under.uid) : WORLD, mainKey(part.uid));
   }
 
+  // ---- bolts ------------------------------------------------------------
+  // Everything under a bolt becomes one rigid piece (with the bolt).
+  const boltGroup = new UnionFind();
+  for (const part of parts) {
+    if (getDef(part.type).kind !== 'bolt') continue;
+    const under = partsAt(solid, part.x, part.y);
+    if (!under.length) { uf.union(WORLD, mainKey(part.uid)); continue; }
+    for (const p of under) {
+      uf.union(mainKey(under[0].uid), mainKey(p.uid));
+      boltGroup.add(p.uid); boltGroup.add(under[0].uid);
+      boltGroup.union(under[0].uid, p.uid);
+    }
+    uf.union(mainKey(under[0].uid), mainKey(part.uid));
+  }
+  const bolted = (a, b) => boltGroup.parent.has(a) && boltGroup.parent.has(b) && boltGroup.find(a) === boltGroup.find(b);
+
   // ---- joining rules per cluster --------------------------------------
   const clusters = findClusters(parts);
+
+  // Bolted-together parts don't also join at a shared hole: drop the beam
+  // (keep the gear/wheel/motor, which needs that point as its axle).
+  const keepRank = (uid) => ({ rotor: 3, driver: 3, connector: 2 }[roleOf(getDef(byUid.get(uid).type).kind)] ?? 1);
+  for (const cl of clusters) {
+    cl.uids = cl.uids.filter((u) => !cl.uids.some((v) => v !== u && bolted(u, v) && keepRank(v) > keepRank(u)));
+  }
 
   // A part hooked onto another part's PIVOT (a rod on a crank pin or slider
   // block) must move relative to it, so it never bolts onto that part's
@@ -278,7 +304,17 @@ export function buildAssembly(parts) {
     }
   }
 
+  // Beams bolted onto a gear/wheel (draw them on top of it, so they look attached).
+  const onRotor = new Set();
+  for (const body of bodyMap.values()) {
+    if (body.isStatic) continue;
+    const uids = body.keys.map((k) => elements.get(k).uid);
+    if (!uids.some((u) => roleOf(getDef(byUid.get(u).type).kind) === 'rotor')) continue;
+    for (const u of uids) if (roleOf(getDef(byUid.get(u).type).kind) === 'beam') onRotor.add(u);
+  }
+
   return {
+    onRotor,
     elements, bodies: [...bodyMap.values()], bodyOf, revolutes, prismatics, joints, clusters, warnings,
     /** The axle revolute that a body spins on (it is the joint's body B), if any.
      *  Pivots (crank pins) don't count: a wheel spins on its centre. */

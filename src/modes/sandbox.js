@@ -102,7 +102,7 @@ export const sandboxMode = {
       <li><b>Place:</b> click a part on the left, then click the world as often as you like. <kbd>Esc</kbd> or right-click to stop.</li>
       <li><b>Beams, springs, ropes, sliders, track:</b> drag from one point to another to draw them.</li>
       <li>Gears <b>snap</b> to mesh (white dot). Drop a gear <b>between two gears</b> and it meshes with both.</li>
-      <li><b>Gear holes:</b> draw a beam from a gear's bolt hole and it's bolted on, turning with the gear. Add a <b>hinge</b> on the hole to make it pivot (a crank).</li>
+      <li><b>Bolt a beam onto a gear:</b> draw the beam across the gear, then press <kbd>G</kbd> (Bolt) and click where they overlap. Now they turn together. Works on wheels and crates too.</li>
       <li><b>Ropes &amp; springs:</b> untick <b>Anchored</b> (Screwdriver) and a loose end hangs free on a hook.</li>
       <li><b>Scale</b> a gear for more teeth, a wheel for a bigger tyre, a crate or block for a bigger box.</li>
       <li><b>Wrench:</b> click a Switch, Button or Key, then a motor. While playing, use the control to run the motor.</li>

@@ -138,6 +138,13 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
     return out;
   }
 
+  if (role === 'bolt') {
+    // Bolts go exactly where you drop them (they bolt whatever is under
+    // them), but hop onto a hole if you're right next to one.
+    const s = nearestSocket(others, x, y, 0.25);
+    return s ? { x: s.x, y: s.y, angle, hint: `bolts ${socketLabel(getDef(s.part.type), s.socket).replace('on ', 'onto ')}` } : out;
+  }
+
   if (role === 'object' || role === 'link' || role === 'control') {
     // Loose objects go wherever you drop them (ramps snap to the grid).
     if (useGrid && (def.kind === 'ramp' || def.kind === 'block')) {

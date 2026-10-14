@@ -72,7 +72,7 @@ export function lineFrom(a, b) {
 export function socketsOf(part) {
   const def = partDef(part);
   const role = roleOf(def.kind);
-  if (role === 'object' || role === 'link' || role === 'control') return [];
+  if (role === 'object' || role === 'link' || role === 'control' || role === 'bolt') return [];
   if (role === 'beam') {
     const out = holesOf(def).map((lx, index) => ({
       ...localToWorld(part.x, part.y, part.angle, lx, 0), index, sub: 'main', pivot: false,
@@ -149,7 +149,7 @@ export function hitTest(part, wx, wy) {
  *  clicking a pin on a gear selects the pin. Higher = picked first. */
 export function pickPriority(def) {
   if (def.kind === 'spring' || def.kind === 'rope') return 3.5;
-  if (roleOf(def.kind) === 'control') return 5;
+  if (roleOf(def.kind) === 'control' || roleOf(def.kind) === 'bolt') return 5;
   if (def.kind === 'track') return 0;
   switch (roleOf(def.kind)) {
     case 'connector': return 4;
