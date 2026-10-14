@@ -26,14 +26,17 @@
 //     pivot on whatever else is at that point: side rods, pistons, legs.
 //   • A SLIDER's rail is bolted down if nothing holds its end holes; its
 //     block slides along it (a prismatic joint).
-//   • LINKS (chains, springs, ropes) have no sockets: they're added by the
-//     gear train (chains) and the physics world (springs, ropes).
+//   • LINKS (chains, springs, ropes, wires) have no sockets: they're added by
+//     the gear train (chains) and the physics world (springs, ropes, wires).
+//   • CONTROLS (switches, buttons, keys) ride on the part under them, or sit
+//     on the background if there's nothing there.
+//   • An ANCHORED part (Screwdriver) is bolted to the background.
 //
 // Each part becomes one or two ELEMENTS (a motor has a housing AND a spinning
 // hub). Elements are what get welded/jointed.
 // =============================================================================
 import { getDef, roleOf } from '../parts/partDefs.js';
-import { socketsOf } from '../parts/geometry.js';
+import { socketsOf, pickPart } from '../parts/geometry.js';
 
 export const WORLD = 'world';
 /** Sockets closer than this (world units) are treated as the same point. */
@@ -105,9 +108,17 @@ export function buildAssembly(parts) {
     if (def.kind === 'motor' || def.kind === 'crank' || def.kind === 'slider') addElement(hubKey(part.uid), part.uid, 'hub');
     // Map pieces (ramps, blocks, track) and pins are part of the static background.
     if (def.kind === 'ramp' || def.kind === 'block' || def.kind === 'track' ||
-        def.kind === 'fixedPin' || def.kind === 'rotPin') {
+        def.kind === 'fixedPin' || def.kind === 'rotPin' || part.props?.anchored) {
       uf.union(WORLD, mainKey(part.uid));
     }
+  }
+
+  // Controls ride on whatever solid part is under them.
+  const solid = parts.filter((p) => { const r = roleOf(getDef(p.type).kind); return r !== 'link' && r !== 'control'; });
+  for (const part of parts) {
+    if (roleOf(getDef(part.type).kind) !== 'control') continue;
+    const under = pickPart(solid, part.x, part.y);
+    uf.union(under ? mainKey(under.uid) : WORLD, mainKey(part.uid));
   }
 
   // ---- joining rules per cluster --------------------------------------

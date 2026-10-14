@@ -133,6 +133,11 @@ export function ropeStroke(ctx, px, fill, trace) {
   ctx.setLineDash([]);
 }
 
+/** Short label for a key name: 'arrowleft' → '←', 'w' → 'W'. */
+export function keyLabel(key) {
+  return { arrowleft: '←', arrowright: '→', arrowup: '↑', arrowdown: '↓', shift: '⇧' }[key] ?? key.toUpperCase();
+}
+
 // ------------------------------------------------------------ part shapes --
 // Each painter draws in local part space (origin = part centre, already
 // rotated). `fill` is the main colour (already load-tinted if needed).
@@ -397,6 +402,61 @@ const painters = {
     ctx.stroke();
   },
 
+  /** A toggle switch: lever left = off, right (green light) = on. */
+  switch(ctx, def, px, fill, opts) {
+    const on = !!opts.on;
+    roundRect(ctx, -0.4, -0.28, 0.8, 0.56, 0.28);
+    ctx.fillStyle = on ? '#3ddc84' : '#8d99ae';
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    circle(ctx, on ? 0.13 : -0.13, 0, 0.21);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+  },
+
+  /** A big round push button on a base. */
+  button(ctx, def, px, fill, opts) {
+    roundRect(ctx, -0.4, -0.4, 0.8, 0.8, 0.14);
+    ctx.fillStyle = '#5c5470';
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    circle(ctx, 0, 0, opts.on ? 0.23 : 0.28);
+    ctx.fillStyle = opts.on ? shade(fill, -0.25) : fill;
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+    if (!opts.on) {
+      circle(ctx, -0.08, 0.08, 0.08);
+      ctx.fillStyle = shade(fill, 0.45);
+      ctx.fill();
+    }
+  },
+
+  /** A keyboard key showing its letter. */
+  keyButton(ctx, def, px, fill, opts) {
+    roundRect(ctx, -0.4, -0.4, 0.8, 0.8, 0.14);
+    ctx.fillStyle = opts.on ? '#ffd23f' : fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    roundRect(ctx, -0.3, -0.24, 0.6, 0.6, 0.1);
+    ctx.fillStyle = shade(opts.on ? '#ffd23f' : fill, 0.4);
+    ctx.fill();
+    const label = keyLabel(opts.props?.key ?? 'w');
+    ctx.save();
+    ctx.scale(1, -1); // text upright (world y is up)
+    ctx.fillStyle = OUTLINE;
+    ctx.font = `700 ${label.length > 1 ? 0.3 : 0.42}px Fredoka, system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, 0, -0.05);
+    ctx.restore();
+  },
+
   axle(ctx, def, px, fill) {
     circle(ctx, 0, 0, def.radius);
     ctx.fillStyle = fill;
@@ -535,13 +595,13 @@ const painters = {
  * @param t     { sx, sy, angle } screen position (pixels) + world angle
  * @param px    pixels per world unit
  * @param opts  { layer: 'main'|'hub', load: number|null, loadView: bool,
- *               ghost: bool, squash: number }
+ *               ghost: bool, squash: number, on: bool (controls), props }
  */
 export function drawPart(ctx, def, t, px, opts = {}) {
   const painter = painters[opts.layer === 'hub' ? `${def.kind}Hub` : def.kind];
   if (!painter) return;
   let fill = def.color;
-  if (opts.loadView && def.category !== 'objects' && def.category !== 'anchors') {
+  if (opts.loadView && def.category !== 'objects' && def.category !== 'anchors' && def.category !== 'controls') {
     fill = opts.load == null ? UNPOWERED : loadColor(opts.load);
   }
   ctx.save();
@@ -550,7 +610,7 @@ export function drawPart(ctx, def, t, px, opts = {}) {
   if (opts.squash) ctx.scale(1 + opts.squash, 1 - opts.squash); // squash & stretch!
   ctx.scale(px, -px);  // world units, y up
   ctx.rotate(t.angle);
-  painter(ctx, def, px, fill);
+  painter(ctx, def, px, fill, opts);
   ctx.restore();
 }
 

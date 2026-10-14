@@ -6,35 +6,53 @@
 //   input (mouse/keys) ──▶ edits to the build / grabs in the simulation
 //   every frame        ──▶ renderer.render(scene)
 //
+// EDITING works like Build a Boat: a TOOLBAR of tools (Move, Rotate, Scale,
+// Wrench, Screwdriver, Delete) acts on the SELECTION (click, Shift-click,
+// or drag a box). Picking a part in the gallery is "placing" mode, which
+// stays on until Esc / right-click.
+//
 // The GAME MODE (src/modes/*) decides the map, default settings, which parts
 // are allowed and which controls appear. App itself is mode-agnostic.
 // =============================================================================
-import { getDef, partDef, roleOf, chainTeeth, chainRadius, HOLE_SPACING } from './parts/partDefs.js';
-import { pickPart, partsAt, socketsOf, outerRadius, lineEnds, lineFrom } from './parts/geometry.js';
-import { snapPart, snapEnd, snapDrawEnd } from './parts/snap.js';
+import { getDef, partDef, roleOf, chainTeeth, chainRadius, scaleSpec, pitchRadius, HOLE_SPACING } from './parts/partDefs.js';
+import { pickPart, partsAt, socketsOf, outerRadius, lineEnds, lineFrom, boundsOf, worldToLocal, localToWorld } from './parts/geometry.js';
+import { snapPart, snapEnd, snapDrawEnd, GRID } from './parts/snap.js';
 import { emptyBuild, cloneBuild, addPart, findPart, removePart } from './core/build.js';
 import { buildAssembly, mainKey, hubKey, WORLD } from './physics/assembly.js';
 import { solveGearTrain } from './physics/gearTrain.js';
 import { Simulation, DT, CRANK_TORQUE } from './physics/world.js';
 import { Camera, Renderer } from './render/renderer.js';
 import { chainPath } from './render/draw.js';
-import { buildGallery, drawThumb } from './ui/gallery.js';
+import { buildGallery } from './ui/gallery.js';
 import { Panel } from './ui/panel.js';
 import { showReadout } from './ui/readout.js';
+import { renderProps } from './ui/props.js';
 import { History } from './core/history.js';
 import { autosave, loadAutosave } from './save/storage.js';
 import { createSaveDialog } from './ui/saveDialog.js';
 
 const ROTATE_STEP = Math.PI / 12; // 15°
 
-/** Keyboard shortcuts for picking a tool (edit mode). */
+/** Keyboard shortcuts for picking a part to place (edit mode). */
 export const HOTKEYS = {
   beam: 'B', axle: 'A', hinge: 'H', 'pin-rotating': 'P', 'pin-fixed': 'F',
   chain: 'C', spring: 'S', rope: 'O', slider: 'J', track: 'T',
 };
-/** The tool dock under the world, left to right. null = Select. */
-const DOCK = [null, 'beam', 'axle', 'hinge', 'pin-rotating', 'pin-fixed', 'chain', 'spring', 'rope', 'slider', 'track'];
-const HANDLE_PX = 11; // how close (pixels) you must press to grab a stretch handle
+
+/** The toolbar, left to right. */
+export const TOOLS = [
+  { id: 'move',   key: '1', icon: '✥',  name: 'Move',        tip: 'Click to select, Shift-click to add, drag a box to select many. Drag parts to move them.' },
+  { id: 'rotate', key: '2', icon: '⟳',  name: 'Rotate',      tip: 'Select parts, then drag the blue ring (or a selected part) to turn them. Alt = any angle.' },
+  { id: 'scale',  key: '3', icon: '⤢',  name: 'Scale',       tip: 'Click a part, then drag its blue handles to resize it (gears get more teeth). Beams stretch by their ends.' },
+  { id: 'wire',   key: '4', icon: '🔧', name: 'Wrench',      tip: 'Wire a Switch, Button or Key to a motor: click one, then the other. Click the same pair again to cut the wire.' },
+  { id: 'props',  key: '5', icon: '🪛', name: 'Screwdriver', tip: 'Click parts (Shift-click / box for several) to change their properties: collisions, anchored, and more.' },
+  { id: 'delete', key: '6', icon: '🔨', name: 'Delete',      tip: 'Click a part to remove it, or drag a box to remove everything inside.' },
+];
+
+const HANDLE_PX = 11; // how close (pixels) you must press to grab a handle
+
+const kindOf = (p) => getDef(p.type).kind;
+const isLinkKind = (k) => k === 'chain' || k === 'wire';
 
 export class App {
   constructor(mode) {
@@ -45,16 +63,21 @@ export class App {
     this.state = 'edit';        // 'edit' | 'playing' | 'paused'
     this.sim = null;            // Simulation while playing/paused
     this.preplay = null;        // copy of the build from before Play (for Reset)
-    this.selectedUid = null;
-    this.armedType = null;      // current TOOL: a part id that stays picked until Esc
+    this.selection = new Set(); // selected part uids
+    this.selectedUid = null;    // the "main" selected part (last clicked): panel, info card, camera follow
+    this.tool = 'move';         // toolbar tool (see TOOLS)
+    this.armedType = null;      // part being PLACED (from the gallery); stays until Esc
     this.drag = null;           // current pointer gesture
     this.ghost = null;          // placement preview
     this.drawing = null;        // click-click drawing in progress: { type, a }
     this.drawStart = null;      // where a drawing tool would start (hover dot)
-    this.chainPick = null;      // chain tool: first sprocket picked
+    this.chainPick = null;      // chain placing: first sprocket picked
+    this.wirePick = null;       // wrench: first control/motor picked
     this.hoverUid = null;       // part under the pointer (edit mode)
     this.showInfo = false;      // readout card: only after you CLICK a part
-    this.keys = new Set();      // arrow keys held (driving key motors)
+    this.keys = new Set();      // keys held while playing
+    this.mouse = { x: 0, y: 0 };// last pointer position (world), for paste
+    this.clipboard = null;      // copied parts
     this.placedAt = new Map();  // uid -> time placed (for the squash animation)
     this.analysis = null;       // cached edit-mode assembly + gear train
     this.listeners = [];        // (event) => void, for modes/panels
@@ -68,12 +91,13 @@ export class App {
     this.renderer = new Renderer(this.canvas, this.camera);
     this.readoutEl = document.getElementById('readout');
     this.toastEl = document.getElementById('toast');
-
     this.toolChipEl = document.getElementById('tool-chip');
+    this.propsPopEl = document.getElementById('props-pop');
+
     this.gallery = buildGallery(document.getElementById('gallery'), {
       onDragStart: (type, e) => this._beginGalleryDrag(type, e),
     }, this.mode.partFilter, HOTKEYS);
-    this._buildDock();
+    this._buildToolbar();
     this.panel = new Panel(document.getElementById('panel'));
     this.mode.setup(this);
 
@@ -83,7 +107,8 @@ export class App {
     window.addEventListener('resize', () => this.renderer.resize());
     this.renderer.resize();
     document.fonts?.ready.then(() => this.gallery.redraw());
-    window.addEventListener('blur', () => { this.keys.clear(); this._syncThrottle(); });
+    window.addEventListener('blur', () => { this.keys.clear(); this._syncKeys(); });
+    this.on((type) => { if (type === 'select' || type === 'changed' || type === 'state') this._syncPropsPop(); });
 
     // Pick up where you left off, or start with the mode's starter build.
     const saved = loadAutosave();
@@ -105,13 +130,14 @@ export class App {
         while (acc >= DT && steps < 12) { this.sim.step(DT); acc -= DT; steps++; }
         if (steps === 12) acc = 0; // too slow: drop time rather than spiral
       }
+      this._panWithKeys(dt);
       this._render();
       requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);
   }
 
-  /** Subscribe to app events ('changed', 'state', 'select'). */
+  /** Subscribe to app events ('changed', 'state', 'select', 'tool'). */
   on(fn) { this.listeners.push(fn); }
   emit(type) { for (const fn of this.listeners) fn(type); }
 
@@ -140,7 +166,7 @@ export class App {
     const build = step();
     if (!build) { this.toast(emptyMsg); return; }
     this.build = build;
-    if (this.selectedUid != null && !findPart(build, this.selectedUid)) this.select(null);
+    this._pruneSelection();
     this.changed();
     this.emit('history');
   }
@@ -183,11 +209,9 @@ export class App {
 
   /** Link two sprockets/gears with a chain. */
   placeChain(uidA, uidB) {
-    const exists = this.build.parts.some((p) => getDef(p.type).kind === 'chain' &&
-      ((p.props.a === uidA && p.props.b === uidB) || (p.props.a === uidB && p.props.b === uidA)));
-    if (exists) { this.toast('Those two are already chained'); return null; }
+    if (this._linkBetween('chain', uidA, uidB)) { this.toast('Those two are already chained'); return null; }
     const pa = findPart(this.build, uidA), pb = findPart(this.build, uidB);
-    const ra = chainRadius(getDef(pa.type)), rb = chainRadius(getDef(pb.type));
+    const ra = chainRadius(partDef(pa)), rb = chainRadius(partDef(pb));
     if (Math.hypot(pb.x - pa.x, pb.y - pa.y) <= Math.abs(ra - rb) + 0.3) {
       this.toast('Too close: move them apart first');
       return null;
@@ -195,6 +219,27 @@ export class App {
     const part = addPart(this.build, 'chain', (pa.x + pb.x) / 2, (pa.y + pb.y) / 2, 0, { a: uidA, b: uidB });
     this.commit();
     return part;
+  }
+
+  /** Wrench: wire a control to a motor, or cut the wire if there already is one. */
+  toggleWire(uidA, uidB) {
+    const existing = this._linkBetween('wire', uidA, uidB);
+    if (existing) {
+      removePart(this.build, existing.uid);
+      this.commit();
+      this.toast('✂️ Wire cut');
+      return null;
+    }
+    const pa = findPart(this.build, uidA), pb = findPart(this.build, uidB);
+    const part = addPart(this.build, 'wire', (pa.x + pb.x) / 2, (pa.y + pb.y) / 2, 0, { a: uidA, b: uidB });
+    this.commit();
+    this.toast('⚡ Wired! Press Play and use the control.');
+    return part;
+  }
+
+  _linkBetween(kind, a, b) {
+    return this.build.parts.find((p) => kindOf(p) === kind &&
+      ((p.props.a === a && p.props.b === b) || (p.props.a === b && p.props.b === a))) || null;
   }
 
   /** Is there something at this part's centre that it could spin on? */
@@ -206,51 +251,176 @@ export class App {
   /** Connectors sitting on this part's centre that nothing else uses
    *  (e.g. the auto-pin under a gear). They move/delete with the part. */
   _passengers(part) {
-    const role = roleOf(getDef(part.type).kind);
+    const role = roleOf(kindOf(part));
     if (role !== 'rotor' && role !== 'driver') return [];
     const at = (p) => Math.hypot(p.x - part.x, p.y - part.y) < 0.12;
     const others = this.build.parts.filter((p) => p.uid !== part.uid);
-    const sharers = others.filter((p) => roleOf(getDef(p.type).kind) !== 'connector' &&
+    const sharers = others.filter((p) => roleOf(kindOf(p)) !== 'connector' &&
       socketsOf(p).some((s) => Math.hypot(s.x - part.x, s.y - part.y) < 0.12));
     if (sharers.length) return [];
-    return others.filter((p) => roleOf(getDef(p.type).kind) === 'connector' && at(p));
+    return others.filter((p) => roleOf(kindOf(p)) === 'connector' && at(p));
   }
 
-  deleteSelected() {
-    if (!this.editable || this.selectedUid == null) return;
-    const part = findPart(this.build, this.selectedUid);
-    if (!part) return;
-    const gone = new Set([part.uid, ...this._passengers(part).map((p) => p.uid)]);
-    // Chains attached to a deleted sprocket go too.
-    for (const p of this.build.parts) {
-      if (getDef(p.type).kind === 'chain' && (gone.has(p.props.a) || gone.has(p.props.b))) gone.add(p.uid);
+  /** Selected parts plus their passengers: everything that moves together. */
+  _movingSet() {
+    const set = new Set();
+    for (const uid of this.selection) {
+      const p = findPart(this.build, uid);
+      if (!p || isLinkKind(kindOf(p))) continue;
+      set.add(p);
+      for (const q of this._passengers(p)) set.add(q);
     }
+    return [...set];
+  }
+
+  /** Remove parts (and whatever can't live without them: passengers, chains, wires). */
+  deleteParts(uids) {
+    if (!this.editable) return;
+    const gone = new Set();
+    for (const uid of uids) {
+      const p = findPart(this.build, uid);
+      if (!p) continue;
+      gone.add(uid);
+      for (const q of this._passengers(p)) gone.add(q.uid);
+    }
+    for (const p of this.build.parts) {
+      if (isLinkKind(kindOf(p)) && (gone.has(p.props.a) || gone.has(p.props.b))) gone.add(p.uid);
+    }
+    if (!gone.size) return;
     for (const uid of gone) removePart(this.build, uid);
-    this.select(null);
+    this._pruneSelection();
     this.commit();
   }
 
-  rotateSelected(dir) {
-    if (!this.editable || this.selectedUid == null) return;
-    const part = findPart(this.build, this.selectedUid);
-    if (!part) return;
-    part.angle += dir * ROTATE_STEP;
-    this.placedAt.set(part.uid, performance.now());
+  deleteSelection() { this.deleteParts([...this.selection]); }
+
+  /** Centre of the selection (a single part: its own centre). */
+  selectionCenter() {
+    const parts = this._movingSet().filter((p) => this.selection.has(p.uid));
+    if (!parts.length) return null;
+    if (parts.length === 1) return { x: parts[0].x, y: parts[0].y, r: this._radiusOf(parts) };
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of parts) {
+      const b = boundsOf(p);
+      x0 = Math.min(x0, b.x0); y0 = Math.min(y0, b.y0); x1 = Math.max(x1, b.x1); y1 = Math.max(y1, b.y1);
+    }
+    const c = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+    // Keep the pivot on the grid so rotated holes still land on grid points.
+    if (this.options.grid) { c.x = Math.round(c.x / GRID) * GRID; c.y = Math.round(c.y / GRID) * GRID; }
+    return { ...c, r: this._radiusOf(parts, c) };
+  }
+
+  _radiusOf(parts, c = parts[0]) {
+    let r = 0.5;
+    for (const p of parts) {
+      const b = boundsOf(p);
+      for (const [x, y] of [[b.x0, b.y0], [b.x1, b.y1], [b.x0, b.y1], [b.x1, b.y0]]) r = Math.max(r, Math.hypot(x - c.x, y - c.y) * 0.85);
+    }
+    return r;
+  }
+
+  /** Turn the moving set by `delta` radians round centre c (from saved originals). */
+  _applyRotation(orig, c, delta) {
+    const cos = Math.cos(delta), sin = Math.sin(delta);
+    for (const o of orig) {
+      const dx = o.x - c.x, dy = o.y - c.y;
+      o.p.x = c.x + dx * cos - dy * sin;
+      o.p.y = c.y + dx * sin + dy * cos;
+      o.p.angle = o.angle + delta;
+    }
+  }
+
+  rotateSelection(dir) {
+    if (!this.editable || !this.selection.size) return;
+    const c = this.selectionCenter();
+    const orig = this._movingSet().map((p) => ({ p, x: p.x, y: p.y, angle: p.angle }));
+    this._applyRotation(orig, c, dir * ROTATE_STEP);
+    for (const o of orig) this.placedAt.set(o.p.uid, performance.now());
     this.commit();
   }
 
-  /** Set a per-part property (e.g. motor direction). */
-  setPartProp(uid, key, value) {
-    const part = findPart(this.build, uid);
-    if (!part || !this.editable) return;
-    part.props[key] = value;
+  /** Copy the selection (plus chains/wires between selected parts). */
+  copySelection() {
+    const moving = this._movingSet();
+    if (!moving.length) return false;
+    const uids = new Set(moving.map((p) => p.uid));
+    const links = this.build.parts.filter((p) => isLinkKind(kindOf(p)) && uids.has(p.props.a) && uids.has(p.props.b));
+    const parts = [...moving, ...links];
+    const c = this.selectionCenter();
+    this.clipboard = { parts: cloneBuild({ parts }).parts, cx: c.x, cy: c.y };
+    return true;
+  }
+
+  /** Paste the clipboard centred at (x, y), or offset from the original. */
+  paste(at = null) {
+    if (!this.editable || !this.clipboard) return;
+    const { parts, cx, cy } = this.clipboard;
+    let dx = 1.2, dy = -1.2;
+    if (at) {
+      dx = at.x - cx; dy = at.y - cy;
+      if (this.options.grid) { dx = Math.round(dx / GRID) * GRID; dy = Math.round(dy / GRID) * GRID; }
+    }
+    const map = new Map();
+    const made = [];
+    for (const p of parts) {
+      const q = addPart(this.build, p.type, p.x + dx, p.y + dy, p.angle, p.props);
+      map.set(p.uid, q.uid);
+      made.push(q);
+    }
+    for (const q of made) if (isLinkKind(kindOf(q))) { q.props.a = map.get(q.props.a); q.props.b = map.get(q.props.b); }
+    for (const q of made) this.placedAt.set(q.uid, performance.now());
+    this.commit();
+    this.setSelection(made.filter((q) => !isLinkKind(kindOf(q))).map((q) => q.uid));
+  }
+
+  duplicateSelection() {
+    if (!this.copySelection()) return;
+    // Paste just beside the original, then remember the shifted copy so the
+    // next duplicate steps along again.
+    this.paste();
+    this.clipboard.cx -= 1.2; this.clipboard.cy += 1.2;
+    this.clipboard.parts.forEach((p) => { p.x += 1.2; p.y -= 1.2; });
+  }
+
+  /** Set a property on several parts at once (Screwdriver / panel). */
+  setProps(uids, key, value) {
+    if (!this.editable) return;
+    for (const uid of uids) {
+      const part = findPart(this.build, uid);
+      if (part) part.props[key] = value;
+    }
     this.commit();
   }
 
-  select(uid) {
-    if (uid !== this.selectedUid) this.showInfo = false;
-    this.selectedUid = uid;
+  /** Back-compat: set one part's property. */
+  setPartProp(uid, key, value) { this.setProps([uid], key, value); }
+
+  // ============================================================ selection ==
+  /** Select one part (or nothing). Shift-style adding is in setSelection. */
+  select(uid) { this.setSelection(uid == null ? [] : [uid]); }
+
+  setSelection(uids, primary = uids[uids.length - 1] ?? null) {
+    const next = new Set(uids);
+    if (primary !== this.selectedUid || next.size !== 1) this.showInfo = false;
+    this.selection = next;
+    this.selectedUid = next.has(primary) ? primary : null;
     this.emit('select');
+  }
+
+  toggleSelected(uid) {
+    const s = new Set(this.selection);
+    if (s.has(uid)) s.delete(uid); else s.add(uid);
+    this.setSelection([...s], s.has(uid) ? uid : [...s].pop());
+  }
+
+  _pruneSelection() {
+    const keep = [...this.selection].filter((uid) => findPart(this.build, uid));
+    if (keep.length !== this.selection.size) this.setSelection(keep);
+  }
+
+  selectedParts() {
+    const src = this.sim ? { parts: this.sim.parts } : this.build;
+    return [...this.selection].map((uid) => findPart(src, uid)).filter(Boolean);
   }
 
   /** Replace the whole build (e.g. loading a save). Undoable. */
@@ -269,7 +439,8 @@ export class App {
       this.sim = new Simulation(this.build, this.settings, this.mode.map);
       for (const w of this.sim.assembly.warnings) this.toast(w);
       if (this.sim.hasKeyMotors) this.toast('🎮 Hold ← / → to drive your motors', 3500);
-      this._syncThrottle();
+      else if (this.sim.signals.size) this.toast('🎛️ Click switches and buttons (or hold their keys) to run your motors', 3500);
+      this._syncKeys();
     }
     this._cancelPlacement();
     this.hoverUid = null;
@@ -307,7 +478,7 @@ export class App {
   /** Parts as they currently are (live physics positions while playing). */
   livePart(part) {
     if (!this.sim) return part;
-    const kind = getDef(part.type).kind;
+    const kind = kindOf(part);
     if (kind === 'spring' || kind === 'rope') {
       const ends = this.sim.linkEnds(part.uid);
       if (!ends) return part;
@@ -315,7 +486,7 @@ export class App {
       return { ...part, x: l.x, y: l.y, angle: l.angle, props: { ...part.props, length: l.length } };
     }
     // A crank's clickable arm is on its spinning hub, so use the hub's angle.
-    const layer = getDef(part.type).kind === 'crank' ? 'hub' : 'main';
+    const layer = kind === 'crank' ? 'hub' : 'main';
     const t = this.sim.transformOf(part.uid, layer);
     return t ? { ...part, x: t.x, y: t.y, angle: t.angle } : part;
   }
@@ -330,7 +501,8 @@ export class App {
   readoutFor(uid) {
     const part = findPart(this.sim ? { parts: this.sim.parts } : this.build, uid);
     if (!part) return null;
-    const def = getDef(part.type);
+    const def = partDef(part);
+    const name = def.kind === 'gear' ? `Gear ${def.teeth}T` : def.name;
     const role = roleOf(def.kind);
     // Only parts with numbers worth showing get a card (the panel has the rest).
     if (role !== 'rotor' && role !== 'driver') return null;
@@ -339,7 +511,7 @@ export class App {
       const note = r.jammed ? '⛔ Jammed: these gears lock each other.'
         : r.stalled ? '🛑 Stalled: the load needs more torque than the motor has.'
         : r.driverUid == null ? (r.mounted ? 'Not powered.' : 'Not on an axle.') : null;
-      return { name: def.name, live: true, rpm: r.rpm, torque: r.torque, ratio: r.ratio,
+      return { name, live: true, rpm: r.rpm, torque: r.torque, ratio: r.ratio,
         load: r.driverUid != null ? r.load : null, note };
     }
     // Edit mode: predict from the gear-train graph.
@@ -349,18 +521,18 @@ export class App {
     const drive = train.driveOf(bodyId);
     if (!drive || drive.driverUid == null) {
       const mounted = bodyId === WORLD || assembly.axleOf(bodyId);
-      return { name: def.name, ratio: null,
+      return { name, ratio: null,
         note: drive?.jammed ? '⛔ This gear train is jammed.' : mounted ? 'Not connected to a motor or crank yet.' : 'No axle: put it on a pin, beam hole or motor.' };
     }
     const driver = findPart(this.build, drive.driverUid);
-    const dkind = getDef(driver.type).kind;
-    if (drive.jammed) return { name: def.name, ratio: drive.ratio, note: '⛔ This gear train is jammed and won’t turn.' };
+    const dkind = kindOf(driver);
+    if (drive.jammed) return { name, ratio: drive.ratio, note: '⛔ This gear train is jammed and won’t turn.' };
     if (dkind === 'crank') {
-      return { name: def.name, ratio: drive.ratio, torque: CRANK_TORQUE / Math.abs(drive.ratio),
+      return { name, ratio: drive.ratio, torque: CRANK_TORQUE / Math.abs(drive.ratio),
         note: 'Driven by a hand crank: press Play and drag the crank handle.' };
     }
     const dir = driver.props.reverse ? -1 : 1;
-    return { name: def.name, ratio: drive.ratio,
+    return { name, ratio: drive.ratio,
       rpm: this.settings.motorRpm * dir * drive.ratio,
       torque: this.settings.motorTorque / Math.abs(drive.ratio),
       note: 'Prediction. Press Play to see it under real load.' };
@@ -388,18 +560,18 @@ export class App {
       for (const m of meshes) if (m.chain && (m.status !== 'ok' || m.jammed)) badChains.add(m.uid);
       if (this.options.joints) joints = assembly.joints;
       // Spring/rope ends touching nothing hang on the background: show a pin there.
+      const solid = this.build.parts.filter((q) => roleOf(kindOf(q)) !== 'link');
       for (const p of this.build.parts) {
-        const k = getDef(p.type).kind;
+        const k = kindOf(p);
         if (k !== 'spring' && k !== 'rope') continue;
         for (const e of lineEnds(p)) {
-          const solid = this.build.parts.filter((q) => roleOf(getDef(q.type).kind) !== 'link');
           const onSocket = solid.some((q) => socketsOf(q).some((so) => Math.hypot(so.x - e.x, so.y - e.y) < 0.12));
           if (!onSocket && !pickPart(solid, e.x, e.y)) skyPins.push(e);
         }
       }
       for (const uid of train.floatingGears) {
         const p = findPart(this.build, uid);
-        if (p) labels.push({ x: p.x, y: p.y + outerRadius(getDef(p.type)) + 0.5, text: '❗ no axle', color: '#ffe066' });
+        if (p) labels.push({ x: p.x, y: p.y + outerRadius(partDef(p)) + 0.5, text: '❗ no axle', color: '#ffe066' });
       }
       for (const c of train.components) {
         if (!c.jammed) continue;
@@ -412,15 +584,27 @@ export class App {
 
     const d = this.drag;
     const editing = this.editable;
+    const busy = d && d.moved;
     const placing = editing && (this.armedType || this.drawing ||
       (d && (d.kind === 'draw' || d.kind === 'stretch' || (d.kind === 'move' && d.moved))) || this._galleryDragging);
-    const selPart = editing && this.selectedUid != null ? findPart(this.build, this.selectedUid) : null;
-    const handles = selPart && partDef(selPart).drawn && !(d && d.kind === 'move' && d.moved) ? lineEnds(selPart) : [];
+
+    // Tool overlays: handles, rotate ring, wire highlights.
+    let handles = [], rotateGizmo = null, handleLabel = null;
+    if (editing && !this.armedType) {
+      if (this.tool === 'move' || this.tool === 'scale') handles = this._handles();
+      if (d?.label) handleLabel = d.label;
+      if (this.tool === 'rotate' && this.selection.size && !(d && d.kind === 'move')) {
+        const c = d?.kind === 'rotate' ? d.c : this.selectionCenter();
+        if (c) rotateGizmo = { x: c.x, y: c.y, r: c.r, angle: d?.kind === 'rotate' ? d.knob : Math.PI / 4,
+          label: d?.kind === 'rotate' ? d.text : null };
+      }
+    }
 
     this.renderer.render({
       parts, mode: editing ? 'edit' : 'play', map: this.mode.map, grid: this.options.grid,
       transformOf: (uid, layer) => this.transformOf(uid, layer),
       linkEndsOf: (uid) => (this.sim ? this.sim.linkEnds(uid) : null),
+      signalOf: (uid) => this.sim?.signals.get(uid) ?? (editing ? !!findPart(this.build, uid)?.props.on : false),
       loadOf: (uid) => (this.options.loadView && this.sim ? this.sim.loadOf(uid) : null),
       loadView: this.options.loadView && !!this.sim, // load colours only mean something while running
       squashOf: (uid) => {
@@ -430,13 +614,15 @@ export class App {
         if (t > 0.6) { this.placedAt.delete(uid); return 0; }
         return 0.22 * Math.exp(-t * 8) * Math.cos(t * 26); // squash, bounce, settle
       },
-      selectedUid: this.selectedUid,
-      hoverUid: editing && !d ? this.hoverUid : null,
-      pickedUid: this.chainPick,
+      selection: this.selection,
+      hoverUid: editing && !busy ? this.hoverUid : null,
+      pickedUid: this.chainPick ?? this.wirePick,
       ghost: this.ghost,
       drawStart: editing && !d ? (this.drawing ? null : this.drawStart) : null,
       showSockets: !!placing,
-      handles, joints, badChains, skyPins,
+      wiresStrong: editing && this.tool === 'wire' && !this.armedType,
+      marquee: d?.kind === 'marquee' && d.moved ? { ...d.box, del: this.tool === 'delete' } : null,
+      handles, handleLabel, rotateGizmo, joints, badChains, skyPins,
       meshes, labels,
     });
 
@@ -458,10 +644,32 @@ export class App {
       const sel = (this.sim ? this.sim.parts : this.build.parts).find((p) => p.uid === this.selectedUid);
       const def = sel && partDef(sel);
       const r = def ? (def.drawn ? def.thickness : outerRadius(def)) * this.camera.zoom : 0;
-      showReadout(this.readoutEl, this.showInfo && !this.drag ? this.readoutFor(this.selectedUid) : null, s, r);
+      const show = this.showInfo && !this.drag && this.selection.size === 1 && (this.tool === 'move' || !this.editable);
+      showReadout(this.readoutEl, show ? this.readoutFor(this.selectedUid) : null, s, r);
     } else {
       showReadout(this.readoutEl, null);
     }
+    this._placePropsPop();
+  }
+
+  /** Handles for the Move tool (stretch ends) and Scale tool (resize). */
+  _handles() {
+    if (this.selection.size !== 1 || this.selectedUid == null) return [];
+    const part = findPart(this.build, this.selectedUid);
+    if (!part) return [];
+    const def = partDef(part);
+    if (def.drawn) return lineEnds(part).map((p, i) => ({ ...p, kind: 'end', end: i }));
+    if (this.tool !== 'scale') return [];
+    const spec = scaleSpec(def);
+    if (!spec) return [];
+    if (spec[0].axis) {
+      // Boxes: one handle on the right edge (width), one on top (height).
+      return spec.map((sp) => {
+        const half = sp.axis === 'x' ? { x: def.width / 2, y: 0 } : { x: def.kind === 'ramp' ? def.width / 2 : 0, y: def.height / 2 };
+        return { ...localToWorld(part.x, part.y, part.angle, half.x, half.y), kind: 'scale', spec: sp };
+      });
+    }
+    return [{ x: part.x + outerRadius(def), y: part.y, kind: 'scale', spec: spec[0] }];
   }
 
   toast(text, ms = 2200) {
@@ -473,6 +681,38 @@ export class App {
     el.style.animation = '';
     clearTimeout(this._toastTimer);
     this._toastTimer = setTimeout(() => { el.hidden = true; }, ms);
+  }
+
+  // ======================================================== props pop-up ==
+  /** The Screwdriver's floating property card, next to the selection. */
+  _syncPropsPop() {
+    const el = this.propsPopEl;
+    if (!el) return;
+    const parts = this.editable && this.tool === 'props' && !this.armedType ? this.selectedParts() : [];
+    if (!parts.length) { el.hidden = true; return; }
+    el.hidden = false;
+    renderProps(el, this, parts, { tips: false });
+    this._placePropsPop(true);
+  }
+
+  _placePropsPop(force = false) {
+    const el = this.propsPopEl;
+    if (!el || el.hidden) return;
+    if (!force && this.drag) return;
+    const parts = this.selectedParts();
+    if (!parts.length) return;
+    let x1 = -Infinity, yMid = 0;
+    for (const p of parts) { const b = boundsOf(p); x1 = Math.max(x1, b.x1); yMid += (b.y0 + b.y1) / 2; }
+    const s = this.camera.worldToScreen(x1, yMid / parts.length);
+    const w = el.offsetWidth, h = el.offsetHeight, W = this.camera.w, H = this.camera.h;
+    let x = s.x + 18, y = s.y - h / 2;
+    if (x + w > W - 8) {
+      let x0 = Infinity;
+      for (const p of parts) x0 = Math.min(x0, boundsOf(p).x0);
+      x = this.camera.worldToScreen(x0, 0).x - w - 18;
+    }
+    el.style.left = `${Math.max(8, Math.min(W - w - 8, x))}px`;
+    el.style.top = `${Math.max(8, Math.min(H - h - 70, y))}px`;
   }
 
   // ================================================================ input ==
@@ -535,6 +775,11 @@ export class App {
     return this.camera.screenToWorld(e.clientX - r.left, e.clientY - r.top);
   }
 
+  _screenAt(e) {
+    const r = this.canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
   _overCanvas(e) {
     const r = this.canvas.getBoundingClientRect();
     return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
@@ -544,24 +789,49 @@ export class App {
   _pick(w) {
     const parts = (this.sim ? this.sim.parts : this.build.parts).map((p) => this.livePart(p));
     const hit = pickPart(parts, w.x, w.y);
-    if (hit && roleOf(getDef(hit.type).kind) !== 'beam' && roleOf(getDef(hit.type).kind) !== 'object') return hit;
-    return this._pickChain(parts, w) || hit;
+    if (hit && roleOf(kindOf(hit)) !== 'beam' && roleOf(kindOf(hit)) !== 'object') return hit;
+    return this._pickLink(parts, w) || hit;
   }
 
-  /** A chain whose straight runs pass under the pointer. */
-  _pickChain(parts, w) {
+  /** A chain or wire (edit mode) passing under the pointer. */
+  _pickLink(parts, w) {
     const byUid = new Map(parts.map((p) => [p.uid, p]));
     const segDist = (p, a, b) => {
       const vx = b.x - a.x, vy = b.y - a.y;
       const t = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / (vx * vx + vy * vy || 1)));
       return Math.hypot(p.x - a.x - vx * t, p.y - a.y - vy * t);
     };
+    const tol = Math.max(0.2, 8 / this.camera.zoom);
     for (const p of parts) {
-      if (getDef(p.type).kind !== 'chain') continue;
+      const k = kindOf(p);
+      if (k !== 'chain' && !(k === 'wire' && this.editable)) continue;
       const pa = byUid.get(p.props.a), pb = byUid.get(p.props.b);
       if (!pa || !pb) continue;
-      const path = chainPath({ x: pa.x, y: pa.y, r: chainRadius(getDef(pa.type)) }, { x: pb.x, y: pb.y, r: chainRadius(getDef(pb.type)) });
-      if (path && (segDist(w, path.a1, path.b1) < 0.2 || segDist(w, path.a2, path.b2) < 0.2)) return p;
+      if (k === 'chain') {
+        const path = chainPath({ x: pa.x, y: pa.y, r: chainRadius(partDef(pa)) }, { x: pb.x, y: pb.y, r: chainRadius(partDef(pb)) });
+        if (path && (segDist(w, path.a1, path.b1) < tol || segDist(w, path.a2, path.b2) < tol)) return p;
+      } else {
+        // The wire droops like the drawing does: sample its curve.
+        const sa = this.camera.worldToScreen(pa.x, pa.y), sb = this.camera.worldToScreen(pb.x, pb.y);
+        const droop = Math.min(60, Math.hypot(sb.x - sa.x, sb.y - sa.y) * 0.18) / this.camera.zoom;
+        const m = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 - droop };
+        let prev = pa;
+        for (let i = 1; i <= 12; i++) {
+          const t = i / 12, u = 1 - t;
+          const q = { x: u * u * pa.x + 2 * u * t * m.x + t * t * pb.x, y: u * u * pa.y + 2 * u * t * m.y + t * t * pb.y };
+          if (segDist(w, prev, q) < tol) return p;
+          prev = q;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Handle under a screen point, if any. */
+  _handleAt(sp) {
+    for (const h of this._handles()) {
+      const s = this.camera.worldToScreen(h.x, h.y);
+      if (Math.hypot(s.x - sp.x, s.y - sp.y) < HANDLE_PX) return h;
     }
     return null;
   }
@@ -574,103 +844,39 @@ export class App {
       cv.setPointerCapture(e.pointerId);
       const w = this._worldAt(e);
       const sx = e.clientX, sy = e.clientY;
-      // Middle/right button pans. A right CLICK (no drag) also puts the tool down.
+      // Middle/right button pans. A right CLICK (no drag) cancels what you're doing.
       if (e.button === 1 || e.button === 2) {
-        this.drag = { kind: 'pan', sx, sy, cx: this.camera.x, cy: this.camera.y, cancelTool: e.button === 2 };
+        this.drag = { kind: 'pan', sx, sy, cx: this.camera.x, cy: this.camera.y, cancel: e.button === 2 };
         cv.classList.add('panning');
         return;
       }
-      if (this.sim) {
-        const hit = this._pick(w);
-        // While running: cranks can be turned, loose bodies grabbed.
-        if (hit) this.select(hit.uid);
-        if (this.state === 'playing' && hit && getDef(hit.type).kind === 'crank') {
-          this.sim.grabCrank(hit.uid, w);
-          this.drag = { kind: 'sim' };
-          return;
-        }
-        if (this.state === 'playing' && this.sim.grabBodyAt(w)) {
-          this.drag = { kind: 'sim' };
-          return;
-        }
-        if (!hit) this.select(null);
-        this.drag = { kind: 'pan', sx, sy, cx: this.camera.x, cy: this.camera.y, clickUid: hit?.uid ?? null };
-        return;
-      }
+      if (this.sim) { this._playDown(w, e); return; }
       if (this.armedType) { this._toolDown(w, e); return; }
-
-      // Stretch handle of the selected drawn part?
-      const sel = this.selectedUid != null ? findPart(this.build, this.selectedUid) : null;
-      if (sel && partDef(sel).drawn) {
-        const ends = lineEnds(sel);
-        for (let i = 0; i < 2; i++) {
-          const s = this.camera.worldToScreen(ends[i].x, ends[i].y);
-          const r = this.canvas.getBoundingClientRect();
-          if (Math.hypot(s.x - (sx - r.left), s.y - (sy - r.top)) < HANDLE_PX) {
-            this.drag = { kind: 'stretch', uid: sel.uid, fixed: ends[1 - i], end: i, moved: false,
-              stack: partsAt(this.build.parts, w.x, w.y) };
-            return;
-          }
-        }
-      }
-
-      let hit = this._pick(w);
-      // Clicking the selected part again picks the next one stacked under
-      // the pointer (e.g. the motor hidden under its wheel).
-      const stack = partsAt(this.build.parts, w.x, w.y);
-      const wasSelected = hit && this.selectedUid != null && stack.some((p) => p.uid === this.selectedUid);
-      if (hit && wasSelected) hit = findPart(this.build, this.selectedUid);
-      if (hit) {
-        this.select(hit.uid);
-        const passengers = this._passengers(hit).map((p) => ({ p, dx: p.x - hit.x, dy: p.y - hit.y }));
-        this.drag = { kind: 'move', uid: hit.uid, ox: hit.x - w.x, oy: hit.y - w.y, sx, sy, moved: false, passengers,
-          stack: wasSelected ? stack : null };
-      } else {
-        this.select(null);
-        this.drag = { kind: 'pan', sx, sy, cx: this.camera.x, cy: this.camera.y };
-        cv.classList.add('panning');
-      }
+      this._editDown(w, e);
     });
 
     cv.addEventListener('pointermove', (e) => {
       const w = this._worldAt(e);
+      this.mouse = w;
       const d = this.drag;
-      if (!d) { this._hover(w); return; }
-      if (d.kind === 'pan') {
-        if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 4) { d.cancelTool = false; d.clickUid = null; }
-        this.camera.x = d.cx - (e.clientX - d.sx) / this.camera.zoom;
-        this.camera.y = d.cy + (e.clientY - d.sy) / this.camera.zoom;
-      } else if (d.kind === 'sim') {
-        this.sim.dragTo(w);
-      } else if (d.kind === 'draw') {
-        if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 6) d.moved = true;
-        this._drawPreview(d.type, d.a, w, e);
-      } else if (d.kind === 'stretch') {
-        d.moved = true;
-        const part = findPart(this.build, d.uid);
-        const kind = getDef(part.type).kind;
-        const others = this.build.parts.filter((p) => p.uid !== part.uid);
-        const end = snapDrawEnd(others, kind, d.fixed, w, { freeAngle: e.altKey });
-        const [a, b] = d.end === 1 ? [d.fixed, end] : [end, d.fixed];
-        const l = lineFrom(a, b);
-        Object.assign(part, { x: l.x, y: l.y, angle: l.angle });
-        part.props.length = +l.length.toFixed(4);
-        this.ghost = { type: part.type, x: l.x, y: l.y, angle: l.angle, hintOnly: true, hint: end.hint,
-          label: this._lengthLabel(part.type, l.length), labelAt: end };
-        this.changed();
-      } else if (d.kind === 'move') {
-        if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 4) return;
-        d.moved = true;
-        this.showInfo = false;
-        const part = findPart(this.build, d.uid);
-        const ignore = new Set([d.uid, ...d.passengers.map((q) => q.p.uid)]);
-        const others = this.build.parts.filter((p) => !ignore.has(p.uid));
-        const snap = snapPart(others, part.type, w.x + d.ox, w.y + d.oy, part.angle,
-          { grid: this.options.grid, length: part.props.length });
-        part.x = snap.x; part.y = snap.y; part.angle = snap.angle;
-        for (const q of d.passengers) { q.p.x = part.x + q.dx; q.p.y = part.y + q.dy; }
-        this.ghost = snap.hint ? { type: part.type, x: part.x, y: part.y, angle: part.angle, hint: snap.hint, hintOnly: true } : null;
-        this.changed();
+      if (!d) { this._hover(w, e); return; }
+      if (!d.moved && Math.hypot(e.clientX - (d.sx ?? e.clientX), e.clientY - (d.sy ?? e.clientY)) > 4) d.moved = true;
+      switch (d.kind) {
+        case 'pan':
+          if (d.moved) { d.cancel = false; d.clickUid = null; }
+          this.camera.x = d.cx - (e.clientX - d.sx) / this.camera.zoom;
+          this.camera.y = d.cy + (e.clientY - d.sy) / this.camera.zoom;
+          break;
+        case 'sim': this.sim.dragTo(w); break;
+        case 'draw': this._drawPreview(d.type, d.a, w, e); break;
+        case 'stretch': this._stretchMove(d, w, e); break;
+        case 'scale': this._scaleMove(d, w); break;
+        case 'move': if (d.moved) this._moveMove(d, w); break;
+        case 'rotate': if (d.moved) this._rotateMove(d, w, e); break;
+        case 'marquee':
+          d.box = { x0: Math.min(d.a.x, w.x), y0: Math.min(d.a.y, w.y), x1: Math.max(d.a.x, w.x), y1: Math.max(d.a.y, w.y) };
+          break;
+        default: break;
       }
     });
 
@@ -679,35 +885,45 @@ export class App {
       this.drag = null;
       cv.classList.remove('panning');
       if (!d) return;
-      if (d.kind === 'sim') this.sim?.release();
-      if (d.kind === 'pan') {
-        if (d.cancelTool && (this.armedType || this.drawing)) this._cancelPlacement();
-        else if (d.clickUid != null) this.showInfo = true; // a click on a part while running
-      }
-      if (d.kind === 'move') {
-        if (d.moved) {
-          this.placedAt.set(d.uid, performance.now());
+      const w = this._worldAt(e);
+      switch (d.kind) {
+        case 'sim':
+          this.sim?.release();
+          if (d.button != null) this.sim?.setSignal(d.button, false);
+          break;
+        case 'pan':
+          if (d.cancel) this._cancelAll();
+          else if (d.clickUid != null) this.showInfo = true; // a click on a part while running
+          break;
+        case 'move':
+          if (d.moved) {
+            for (const o of d.orig) this.placedAt.set(o.p.uid, performance.now());
+            this.ghost = null;
+            this.commit();
+          } else {
+            this._clickPart(d);
+          }
+          break;
+        case 'rotate':
+          if (d.moved) { for (const o of d.orig) this.placedAt.set(o.p.uid, performance.now()); this.commit(); }
+          else if (d.clickUid != null) this._clickPart({ ...d, uid: d.clickUid });
+          break;
+        case 'stretch': case 'scale':
           this.ghost = null;
-          this.commit();
-        } else {
-          this._cycleStack(d);
-          this.showInfo = true; // a plain click shows the info card
-        }
-      }
-      if (d.kind === 'stretch') {
-        this.ghost = null;
-        if (d.moved) { this.placedAt.set(d.uid, performance.now()); this.commit(); }
-        else { this._cycleStack(d); this.showInfo = true; }
-      }
-      if (d.kind === 'draw') {
-        const w = this._worldAt(e);
-        if (!d.moved) {
-          // Click (no drag): keep drawing; the next click sets the far end.
-          this.drawing = { type: d.type, a: d.a };
-          this._drawPreview(d.type, d.a, w, e);
-        } else {
-          this._finishDraw(d.type, d.a, w, e);
-        }
+          if (d.moved) { this.placedAt.set(d.uid, performance.now()); this.commit(); }
+          else this._clickPart(d);
+          break;
+        case 'marquee': this._marqueeEnd(d, e); break;
+        case 'draw':
+          if (!d.moved) {
+            // Click (no drag): keep drawing; the next click sets the far end.
+            this.drawing = { type: d.type, a: d.a };
+            this._drawPreview(d.type, d.a, w, e);
+          } else {
+            this._finishDraw(d.type, d.a, w, e);
+          }
+          break;
+        default: break;
       }
     };
     cv.addEventListener('pointerup', end);
@@ -724,50 +940,276 @@ export class App {
     }, { passive: false });
   }
 
-  /** Clicked an already-selected part: step down to the next part stacked there. */
-  _cycleStack(d) {
-    if (!d.stack || d.stack.length < 2) return;
-    const i = d.stack.findIndex((p) => p.uid === d.uid);
-    const next = d.stack[(i + 1) % d.stack.length];
-    this.select(next.uid);
-    this.toast(`Selected ${getDef(next.type).name} (click again for the next part here)`, 1600);
+  /** Pointer pressed while the machine runs: cranks, switches, buttons, grabbing. */
+  _playDown(w, e) {
+    const hit = this._pick(w);
+    if (hit) this.select(hit.uid);
+    const kind = hit && kindOf(hit);
+    if (this.state === 'playing' && kind === 'switch') {
+      this.sim.toggleSwitch(hit.uid);
+      this.drag = { kind: 'sim' };
+      return;
+    }
+    if (this.state === 'playing' && (kind === 'button' || kind === 'keyButton')) {
+      this.sim.setSignal(hit.uid, true);
+      this.drag = { kind: 'sim', button: hit.uid };
+      return;
+    }
+    if (this.state === 'playing' && kind === 'crank') {
+      this.sim.grabCrank(hit.uid, w);
+      this.drag = { kind: 'sim' };
+      return;
+    }
+    if (this.state === 'playing' && this.sim.grabBodyAt(w)) {
+      this.drag = { kind: 'sim' };
+      return;
+    }
+    if (!hit) this.select(null);
+    this.drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, cx: this.camera.x, cy: this.camera.y, clickUid: hit?.uid ?? null };
   }
 
-  /** Pointer moved with no button held: hover highlight, tool previews. */
-  _hover(w) {
-    if (!this.editable) { this.hoverUid = null; this.canvas.style.cursor = ''; return; }
+  /** Pointer pressed in edit mode with a toolbar tool (not placing). */
+  _editDown(w, e) {
+    const sx = e.clientX, sy = e.clientY;
+    const sp = this._screenAt(e);
+    const tool = this.tool;
+    const hit = this._pick(w);
+    const stack = partsAt(this.build.parts, w.x, w.y);
+
+    // Handles first (Move: stretch ends · Scale: resize).
+    const h = (tool === 'move' || tool === 'scale') ? this._handleAt(sp) : null;
+    if (h) {
+      const part = findPart(this.build, this.selectedUid);
+      if (h.kind === 'end') {
+        this.drag = { kind: 'stretch', uid: part.uid, fixed: lineEnds(part)[1 - h.end], end: h.end, sx, sy, stack };
+      } else {
+        this.drag = { kind: 'scale', uid: part.uid, spec: h.spec, sx, sy, stack };
+      }
+      return;
+    }
+
+    if (tool === 'wire') { this._wireClick(hit); return; }
+    if (tool === 'delete') {
+      if (hit) { this.deleteParts([hit.uid]); this.toast(`🔨 Removed ${getDef(hit.type).name}`, 1200); return; }
+      this.drag = { kind: 'marquee', a: w, sx, sy, add: false };
+      return;
+    }
+
+    if (tool === 'rotate' && this.selection.size) {
+      // Grab the ring (or a selected part) to turn the selection.
+      const c = this.selectionCenter();
+      const cs = this.camera.worldToScreen(c.x, c.y);
+      const ringR = c.r * this.camera.zoom + 18;
+      const onRing = Math.abs(Math.hypot(sp.x - cs.x, sp.y - cs.y) - ringR) < 14;
+      const onSelected = hit && this.selection.has(hit.uid) && !e.shiftKey;
+      if (onRing || onSelected) {
+        const start = Math.atan2(w.y - c.y, w.x - c.x);
+        this.drag = { kind: 'rotate', c, start, knob: start, sx, sy, delta: 0, clickUid: onSelected ? hit.uid : null,
+          orig: this._movingSet().map((p) => ({ p, x: p.x, y: p.y, angle: p.angle })) };
+        return;
+      }
+    }
+
+    if (!hit) {
+      // Empty space: drag a selection box (Shift adds to the selection).
+      if (!e.shiftKey && tool !== 'scale') this.setSelection([]);
+      if (tool === 'scale') { this.setSelection([]); return; }
+      this.drag = { kind: 'marquee', a: w, sx, sy, add: e.shiftKey };
+      return;
+    }
+
+    if (tool === 'scale') {
+      // Pins sit on top of gears; scale the first part here that can be scaled.
+      const target = stack.find((p) => scaleSpec(partDef(p))) || hit;
+      this.select(target.uid);
+      this._explainScale(target);
+      return;
+    }
+
+    // Click / Shift-click selection.
+    const wasSelected = this.selection.has(hit.uid) ||
+      (this.selection.size === 1 && stack.some((p) => this.selection.has(p.uid)));
+    if (e.shiftKey) { this.toggleSelected(hit.uid); return; }
+    let grab = hit;
+    if (!this.selection.has(hit.uid)) {
+      if (wasSelected) grab = findPart(this.build, this.selectedUid); // keep grabbing the selected one in a stack
+      else this.select(hit.uid);
+    } else {
+      this.selectedUid = hit.uid;
+    }
+    if (tool === 'props' || tool === 'rotate') { this.emit('select'); return; }
+    // Move tool: drag the whole selection.
+    this.drag = { kind: 'move', uid: grab.uid, ox: grab.x - w.x, oy: grab.y - w.y, sx, sy,
+      stack: wasSelected ? stack : null,
+      orig: this._movingSet().map((p) => ({ p, x: p.x, y: p.y })) };
+  }
+
+  _explainScale(part) {
+    const def = partDef(part);
+    if (!scaleSpec(def)) this.toast(`${def.name} can't be scaled`, 1500);
+  }
+
+  /** A click (no drag) on a part with the Move tool. */
+  _clickPart(d) {
+    if (d.stack && d.stack.length > 1 && this.selection.size === 1) {
+      // Clicked an already-selected part: step down to the next one stacked there.
+      const i = d.stack.findIndex((p) => p.uid === d.uid);
+      const next = d.stack[(i + 1) % d.stack.length];
+      this.select(next.uid);
+      this.toast(`Selected ${getDef(next.type).name} (click again for the next part here)`, 1600);
+    }
+    this.showInfo = true; // a plain click shows the info card
+  }
+
+  _moveMove(d, w) {
+    this.showInfo = false;
+    const part = findPart(this.build, d.uid);
+    const moving = new Set(d.orig.map((o) => o.p.uid));
+    const others = this.build.parts.filter((p) => !moving.has(p.uid));
+    const o0 = d.orig.find((o) => o.p.uid === d.uid);
+    // Snap the part you grabbed; everything else in the selection follows.
+    const snap = snapPart(others, part.type, w.x + d.ox, w.y + d.oy, part.angle,
+      { grid: this.options.grid, props: part.props });
+    const dx = snap.x - o0.x, dy = snap.y - o0.y;
+    for (const o of d.orig) { o.p.x = o.x + dx; o.p.y = o.y + dy; }
+    if (d.orig.length === 1) part.angle = snap.angle;
+    this.ghost = snap.hint ? { type: part.type, props: part.props, x: part.x, y: part.y, angle: part.angle, hint: snap.hint, hintOnly: true } : null;
+    this.changed();
+  }
+
+  _rotateMove(d, w, e) {
+    let delta = Math.atan2(w.y - d.c.y, w.x - d.c.x) - d.start;
+    delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+    if (!e.altKey) delta = Math.round(delta / ROTATE_STEP) * ROTATE_STEP;
+    d.knob = d.start + delta;
+    d.delta = delta;
+    d.text = `${Math.round((delta * 180) / Math.PI)}°`;
+    this._applyRotation(d.orig, d.c, delta);
+    this.changed();
+  }
+
+  _stretchMove(d, w, e) {
+    const part = findPart(this.build, d.uid);
+    const others = this.build.parts.filter((p) => p.uid !== part.uid);
+    const end = snapDrawEnd(others, kindOf(part), d.fixed, w, { freeAngle: e.altKey });
+    const [a, b] = d.end === 1 ? [d.fixed, end] : [end, d.fixed];
+    const l = lineFrom(a, b);
+    Object.assign(part, { x: l.x, y: l.y, angle: l.angle });
+    part.props.length = +l.length.toFixed(4);
+    d.label = { x: end.x, y: end.y, text: this._lengthLabel(part.type, l.length) + (end.hint ? ` · ${end.hint}` : '') };
+    this.changed();
+  }
+
+  /** Scale tool: drag a handle to resize. */
+  _scaleMove(d, w) {
+    const part = findPart(this.build, d.uid);
+    const def = partDef(part);
+    const sp = d.spec;
+    let raw;
+    if (sp.axis) {
+      const l = worldToLocal(part.x, part.y, part.angle, w.x, w.y);
+      raw = 2 * Math.abs(sp.axis === 'x' ? l.x : l.y);
+    } else {
+      const R = Math.hypot(w.x - part.x, w.y - part.y);
+      if (sp.key === 'teeth') raw = def.kind === 'sprocket' ? (R - 0.12) / 0.06 : (2 * (R - 0.18)) / 0.2;
+      else raw = R;
+    }
+    let v = Math.round(raw / sp.step) * sp.step;
+    v = Math.max(sp.min, Math.min(sp.max, +v.toFixed(3)));
+    part.props[sp.key] = v;
+    const nd = partDef(part);
+    d.label = { x: part.x, y: part.y + (nd.height ? nd.height / 2 : outerRadius(nd)),
+      text: sp.key === 'teeth' ? `${v} teeth` : `${sp.key} ${v.toFixed(2).replace(/\.?0+$/, '')} m` };
+    this.changed();
+  }
+
+  _marqueeEnd(d, e) {
+    if (!d.moved || !d.box) { if (this.tool === 'delete') this.toast('Drag a box to delete everything inside it', 1500); return; }
+    const b = d.box;
+    const inside = (p) => p.x >= b.x0 && p.x <= b.x1 && p.y >= b.y0 && p.y <= b.y1;
+    const solid = this.build.parts.filter((p) => !isLinkKind(kindOf(p)) && inside(p));
+    const ids = new Set(solid.map((p) => p.uid));
+    if (this.tool === 'delete') {
+      if (solid.length) { this.deleteParts([...ids]); this.toast(`🔨 Removed ${solid.length} part${solid.length > 1 ? 's' : ''}`, 1400); }
+      return;
+    }
+    const uids = [...ids];
+    this.setSelection(d.add ? [...this.selection, ...uids] : uids);
+    if (uids.length > 1) this.toast(`${this.selection.size} parts selected`, 1200);
+  }
+
+  /** Wrench: click a control, then a motor (either order). */
+  _wireClick(hit) {
+    const k = hit && kindOf(hit);
+    const ok = hit && (roleOf(k) === 'control' || k === 'motor');
+    if (!ok) {
+      if (hit && k === 'wire') { this.select(hit.uid); this.toast('Wire selected: press Delete to cut it', 1600); return; }
+      if (this.wirePick != null) { this.wirePick = null; this.toast('Wire cancelled'); }
+      else this.toast('Click a Switch, Button or Key, then a motor (or the other way round)');
+      return;
+    }
+    if (this.wirePick == null || this.wirePick === hit.uid) {
+      this.wirePick = hit.uid;
+      this.toast(roleOf(k) === 'control' ? 'Now click the motor it should control' : 'Now click the Switch, Button or Key that controls it');
+      return;
+    }
+    const first = findPart(this.build, this.wirePick);
+    const kinds = [roleOf(kindOf(first)) === 'control', roleOf(k) === 'control'];
+    if (kinds[0] === kinds[1]) {
+      this.toast(kinds[0] ? 'Wire a control to a MOTOR' : 'Wire a motor to a Switch, Button or Key');
+      this.wirePick = hit.uid;
+      return;
+    }
+    this.toggleWire(this.wirePick, hit.uid);
+    this.wirePick = null;
+  }
+
+  /** Pointer moved with no button held: hover highlight, previews, cursor. */
+  _hover(w, e) {
+    if (!this.editable) {
+      const hit = this._pick(w);
+      const k = hit && kindOf(hit);
+      this.canvas.style.cursor = k === 'switch' || k === 'button' || k === 'keyButton' || k === 'crank' ? 'pointer' : '';
+      this.hoverUid = null;
+      return;
+    }
     const type = this.armedType;
     const def = type ? getDef(type) : null;
-    if (this.drawing) {
-      this._drawPreview(this.drawing.type, this.drawing.a, w, {});
-    } else if (def?.drawn) {
-      this.drawStart = snapEnd(this.build.parts, def.kind, w.x, w.y, { grid: this.options.grid });
-      this.ghost = this.drawStart.hint ? { type, x: this.drawStart.x, y: this.drawStart.y, angle: 0, hint: this.drawStart.hint, hintOnly: true } : null;
-    } else if (def?.kind === 'chain') {
-      this.ghost = null;
-    } else if (type) {
-      this._updateGhost(type, w);
+    if (type) {
+      if (this.drawing) this._drawPreview(this.drawing.type, this.drawing.a, w, e);
+      else if (def.drawn) {
+        this.drawStart = snapEnd(this.build.parts, def.kind, w.x, w.y, { grid: this.options.grid });
+        this.ghost = this.drawStart.hint ? { type, x: this.drawStart.x, y: this.drawStart.y, angle: 0, hint: this.drawStart.hint, hintOnly: true } : null;
+      } else if (def.kind === 'chain') this.ghost = null;
+      else this._updateGhost(type, w);
+      if (def.kind === 'chain') {
+        const hit = this._pick(w);
+        this.hoverUid = hit && chainTeeth(partDef(hit)) ? hit.uid : null;
+        this.canvas.style.cursor = this.hoverUid != null ? 'pointer' : 'crosshair';
+      } else {
+        this.hoverUid = null;
+        this.canvas.style.cursor = 'crosshair';
+      }
+      return;
     }
-    const hit = type && !def.tool && !def.drawn ? null : this._pick(w);
-    this.hoverUid = hit?.uid ?? null;
-    if (def?.kind === 'chain') {
-      this.hoverUid = hit && chainTeeth(getDef(hit.type)) ? hit.uid : null;
-      this.canvas.style.cursor = this.hoverUid != null ? 'pointer' : 'crosshair';
-    } else if (type) {
-      this.canvas.style.cursor = 'crosshair';
-      if (def.drawn) this.hoverUid = null;
-    } else {
-      // Over a stretch handle?
-      const sel = this.selectedUid != null ? findPart(this.build, this.selectedUid) : null;
-      const overHandle = sel && partDef(sel).drawn && lineEnds(sel).some((p) => {
-        const a = this.camera.worldToScreen(p.x, p.y), b = this.camera.worldToScreen(w.x, w.y);
-        return Math.hypot(a.x - b.x, a.y - b.y) < HANDLE_PX;
-      });
-      this.canvas.style.cursor = overHandle ? 'nwse-resize' : hit ? 'grab' : '';
-    }
+    const hit = this._pick(w);
+    const tool = this.tool;
+    const k = hit && kindOf(hit);
+    if (tool === 'wire') this.hoverUid = hit && (roleOf(k) === 'control' || k === 'motor' || k === 'wire') ? hit.uid : null;
+    else this.hoverUid = hit?.uid ?? null;
+    const h = (tool === 'move' || tool === 'scale') && this._handleAt(this._screenAt(e));
+    const cursor = {
+      move: h ? 'nwse-resize' : hit ? 'grab' : '',
+      rotate: hit ? 'alias' : '',
+      scale: h ? 'nwse-resize' : hit ? 'pointer' : '',
+      wire: this.hoverUid != null ? 'pointer' : 'crosshair',
+      props: hit ? 'pointer' : '',
+      delete: hit ? 'not-allowed' : 'crosshair',
+    }[tool];
+    this.canvas.style.cursor = cursor;
   }
 
-  /** Pointer pressed in the world while a tool is picked. */
+  /** Pointer pressed in the world while placing a part from the gallery. */
   _toolDown(w, e) {
     const type = this.armedType;
     const def = getDef(type);
@@ -780,7 +1222,7 @@ export class App {
     }
     if (def.kind === 'chain') {
       const hit = this._pick(w);
-      if (!hit || !chainTeeth(getDef(hit.type))) {
+      if (!hit || !chainTeeth(partDef(hit))) {
         if (this.chainPick != null) { this.chainPick = null; this.toast('Chain cancelled. Click a sprocket or gear to start.'); }
         else this.toast('Click a sprocket or gear to start the chain');
         return;
@@ -836,7 +1278,7 @@ export class App {
     if (!this.editable) { this.toast('Press ⟲ Reset to edit your build'); return; }
     const def = getDef(type);
     // Drawn parts and the chain are tools: a press just picks them.
-    if (def.drawn || def.tool) { this.setTool(this.armedType === type ? null : type); return; }
+    if (def.drawn || def.tool) { this.setPlacing(this.armedType === type ? null : type); return; }
     const start = { x: e.clientX, y: e.clientY };
     let moved = false;
     const move = (ev) => {
@@ -854,9 +1296,9 @@ export class App {
         this.placePart(type, w.x, w.y, 0);
         this.ghost = null;
       } else if (!moved) {
-        // A plain click picks the part as a tool: click the world to place,
-        // as many times as you like.
-        this.setTool(this.armedType === type ? null : type);
+        // A plain click picks the part: click the world to place, as many
+        // times as you like.
+        this.setPlacing(this.armedType === type ? null : type);
       } else {
         this.ghost = null;
       }
@@ -865,8 +1307,8 @@ export class App {
     window.addEventListener('pointerup', up);
   }
 
-  /** Pick a tool (a part id) or go back to Select (null). */
-  setTool(type) {
+  /** Start placing a part from the gallery (null = stop placing). */
+  setPlacing(type) {
     if (type && !this.editable) { this.toast('Press ⟲ Reset to edit your build'); return; }
     this.armedType = type;
     this.ghost = null;
@@ -877,72 +1319,109 @@ export class App {
     this._syncToolUI();
   }
 
-  _cancelPlacement() { this.setTool(null); }
+  /** Pick a toolbar tool. Stops placing. */
+  setTool(id) {
+    if (!this.editable) return;
+    this.tool = id;
+    this.wirePick = null;
+    this.setPlacing(null);
+    this._syncPropsPop();
+    this.emit('tool');
+  }
 
-  /** Tool chip + dock highlight. */
+  _cancelPlacement() { this.setPlacing(null); }
+
+  /** Esc / right-click: back out of whatever you're in the middle of. */
+  _cancelAll() {
+    if (this.drawing || this.chainPick != null || this.wirePick != null) {
+      this.drawing = null; this.chainPick = null; this.wirePick = null; this.ghost = null;
+    } else if (this.armedType) this.setPlacing(null);
+    else if (this.selection.size) this.setSelection([]);
+    else if (this.tool !== 'move') this.setTool('move');
+  }
+
+  /** Tool chip + toolbar highlight. */
   _syncToolUI() {
-    const type = this.armedType;
-    for (const [id, el] of this.dockButtons || []) el.classList.toggle('on', id === type);
+    for (const [id, el] of this.toolButtons || []) el.classList.toggle('on', id === this.tool && !this.armedType);
     const chip = this.toolChipEl;
     if (!chip) return;
-    if (!type) { chip.hidden = true; return; }
-    const def = getDef(type);
-    const how = def.kind === 'chain' ? 'click a sprocket or gear, then another'
-      : def.drawn ? 'drag from one point to another (or click, click). Alt = any angle'
-      : 'click to place, again and again';
-    chip.innerHTML = `<b>${def.name}</b><span>${how}</span><button class="chip-x" title="Stop (Esc)">Esc ✕</button>`;
-    chip.querySelector('button').addEventListener('click', () => this.setTool(null));
+    const type = this.armedType;
+    let title = null, how = '';
+    if (type) {
+      const def = getDef(type);
+      title = def.name;
+      how = def.kind === 'chain' ? 'click a sprocket or gear, then another'
+        : def.drawn ? 'drag from one point to another (or click, click). Alt = any angle'
+        : 'click to place, again and again';
+    } else if (this.tool !== 'move') {
+      const t = TOOLS.find((x) => x.id === this.tool);
+      title = `${t.icon} ${t.name}`;
+      how = t.tip;
+    }
+    if (!title) { chip.hidden = true; return; }
+    chip.innerHTML = `<b>${title}</b><span>${how}</span><button class="chip-x" title="Stop (Esc)">Esc ✕</button>`;
+    chip.querySelector('button').addEventListener('click', () => (type ? this.setPlacing(null) : this.setTool('move')));
     chip.hidden = false;
   }
 
-  /** The tool dock along the bottom of the world. */
-  _buildDock() {
-    const dock = document.getElementById('dock');
-    if (!dock) return;
-    this.dockButtons = new Map();
-    for (const id of DOCK) {
-      if (id && !this.mode.partFilter(getDef(id))) continue;
+  /** The toolbar along the bottom of the world (Build a Boat style). */
+  _buildToolbar() {
+    const bar = document.getElementById('dock');
+    if (!bar) return;
+    this.toolButtons = new Map();
+    for (const t of TOOLS) {
       const b = document.createElement('button');
       b.className = 'dock-btn';
-      const def = id ? getDef(id) : null;
-      b.title = id ? `${def.name} (${HOTKEYS[id]})${def.tip ? `\n${def.tip}` : ''}` : 'Select & move (V / Esc)';
-      if (id) {
-        const cv = document.createElement('canvas');
-        cv.style.width = '34px'; cv.style.height = '28px';
-        b.appendChild(cv);
-        drawThumb(cv, def, 34, 28);
-      } else {
-        b.insertAdjacentHTML('beforeend', '<span class="dock-ico">🖐</span>');
-      }
-      b.insertAdjacentHTML('beforeend', `<kbd>${id ? HOTKEYS[id] : 'V'}</kbd>`);
-      b.addEventListener('click', () => this.setTool(id));
-      dock.appendChild(b);
-      this.dockButtons.set(id, b);
+      b.title = `${t.name} (${t.key})\n${t.tip}`;
+      b.innerHTML = `<span class="dock-ico">${t.icon}</span><span class="dock-name">${t.name}</span><kbd>${t.key}</kbd>`;
+      b.addEventListener('click', () => this.setTool(t.id));
+      bar.appendChild(b);
+      this.toolButtons.set(t.id, b);
     }
-    this.on((type) => { if (type === 'state') dock.classList.toggle('disabled', !this.editable); });
+    this.on((type) => { if (type === 'state') bar.classList.toggle('disabled', !this.editable); });
     this._syncToolUI();
   }
 
-  _syncThrottle() {
+  // =================================================================== keys ==
+  /** Arrow keys / key controls while playing. */
+  _syncKeys() {
+    if (!this.sim) return;
     const v = (this.keys.has('arrowright') ? 1 : 0) - (this.keys.has('arrowleft') ? 1 : 0);
-    this.sim?.setThrottle(v);
+    this.sim.setThrottle(v);
+    for (const p of this.sim.parts) {
+      if (kindOf(p) === 'keyButton') this.sim.setSignal(p.uid, this.keys.has(p.props.key ?? 'w'));
+    }
+  }
+
+  /** Edit mode: arrow keys pan the view. */
+  _panWithKeys(dt) {
+    if (this.sim || !this.keys.size) return;
+    const sp = (600 / this.camera.zoom) * dt;
+    if (this.keys.has('arrowleft')) this.camera.x -= sp;
+    if (this.keys.has('arrowright')) this.camera.x += sp;
+    if (this.keys.has('arrowup')) this.camera.y += sp;
+    if (this.keys.has('arrowdown')) this.camera.y -= sp;
   }
 
   _bindKeys() {
     window.addEventListener('keyup', (e) => {
       const k = e.key.toLowerCase();
-      if (this.keys.delete(k)) this._syncThrottle();
+      if (this.keys.delete(k)) this._syncKeys();
     });
     window.addEventListener('keydown', (e) => {
-      if (e.target.closest('input, textarea, dialog')) return;
+      if (e.target.closest('input, textarea, select, dialog')) return;
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
-      if ((k === 'arrowleft' || k === 'arrowright') && this.sim) {
-        e.preventDefault();
-        this.keys.add(k);
-        this._syncThrottle();
-        return;
+      // While playing, keys bound to Key controls (and the arrows) drive the machine.
+      if (this.sim && !mod) {
+        const bound = k.startsWith('arrow') || this.sim.keyControls(k).length;
+        if (bound) {
+          e.preventDefault();
+          if (!e.repeat) { this.keys.add(k); this._syncKeys(); }
+          return;
+        }
       }
+      if (!this.sim && !mod && k.startsWith('arrow')) { e.preventDefault(); this.keys.add(k); return; }
       if (mod && k === 'z') {
         e.preventDefault();
         if (e.shiftKey) this.redo(); else this.undo();
@@ -952,29 +1431,40 @@ export class App {
       } else if (mod && k === 'y') {
         e.preventDefault();
         this.redo();
+      } else if (mod && k === 'a' && this.editable) {
+        e.preventDefault();
+        this.setSelection(this.build.parts.filter((p) => !isLinkKind(kindOf(p))).map((p) => p.uid));
+      } else if (mod && k === 'c' && this.editable) {
+        if (this.copySelection()) this.toast(`Copied ${this.selection.size} part${this.selection.size > 1 ? 's' : ''}`, 1200);
+      } else if (mod && k === 'v' && this.editable) {
+        e.preventDefault();
+        this.paste(this.mouse);
+      } else if (mod && k === 'd' && this.editable) {
+        e.preventDefault();
+        this.duplicateSelection();
       } else if (k === ' ') {
         e.preventDefault();
         if (this.state === 'playing') this.pause(); else this.play();
       } else if (k === 'escape') {
-        if (this.drawing || this.chainPick != null) { this.drawing = null; this.chainPick = null; this.ghost = null; }
-        else if (this.armedType) this._cancelPlacement();
-        else this.select(null);
+        this._cancelAll();
       } else if ((k === 'delete' || k === 'backspace') && !mod) {
         e.preventDefault();
-        this.deleteSelected();
+        this.deleteSelection();
       } else if (!mod && (k === 'e' || (k === 'r' && !e.shiftKey && this.editable))) {
-        this.rotateSelected(-1); // clockwise
+        this.rotateSelection(-1); // clockwise
       } else if (!mod && (k === 'q' || (k === 'r' && e.shiftKey))) {
-        this.rotateSelected(1);  // counter-clockwise
+        this.rotateSelection(1);  // counter-clockwise
       } else if (k === 'r' && !mod && !this.editable) {
         this.reset();
       } else if (k === 'home') {
         this.recenter();
       } else if (!mod && !e.altKey && this.editable && k === 'v') {
-        this.setTool(null);
+        this.setTool('move');
+      } else if (!mod && !e.altKey && this.editable && TOOLS.some((t) => t.key === k)) {
+        this.setTool(TOOLS.find((t) => t.key === k).id);
       } else if (!mod && !e.altKey && this.editable && Object.values(HOTKEYS).includes(k.toUpperCase())) {
         const id = Object.keys(HOTKEYS).find((x) => HOTKEYS[x] === k.toUpperCase());
-        this.setTool(this.armedType === id ? null : id);
+        this.setPlacing(this.armedType === id ? null : id);
       } else {
         this.mode.onKey?.(this, e);
       }

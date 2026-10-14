@@ -12,8 +12,7 @@
 // The puzzle mode (puzzle.js, later) will be another object with the same
 // shape, plus goals/level data. Parts and physics never import modes.
 // =============================================================================
-import { getDef, partDef, HOLE_SPACING } from '../parts/partDefs.js';
-import { findPart } from '../core/build.js';
+import { renderProps } from '../ui/props.js';
 import { EXAMPLES } from '../save/examples.js';
 
 export const sandboxMode = {
@@ -34,53 +33,11 @@ export const sandboxMode = {
   setup(app) {
     const { panel } = app;
 
-    // ---- selected part ---------------------------------------------------
-    const sel = panel.section('Selected part', { id: 'sel-section' });
+    // ---- selected part(s) -------------------------------------------------
+    const sel = panel.section('Selected', { id: 'sel-section' });
     const selBody = document.createElement('div');
     sel.appendChild(selBody);
-    const renderSelection = () => {
-      selBody.innerHTML = '';
-      const part = app.selectedUid != null ? findPart(app.sim ? { parts: app.sim.parts } : app.build, app.selectedUid) : null;
-      if (!part) {
-        selBody.innerHTML = '<p>Click a part to select it.</p>';
-        return;
-      }
-      const def = partDef(part);
-      const p = document.createElement('p');
-      const len = def.drawn ? ` · ${(def.length / HOLE_SPACING).toFixed(1).replace(/\.0$/, '')} holes long` : '';
-      const mass = def.mass ? ` · ${+def.mass.toFixed(2)} kg` : '';
-      p.innerHTML = `<b>${def.name}</b>${def.teeth ? ` · ${def.teeth} teeth` : ''}${def.layers ? ` · ${def.layers.join('/')} teeth` : ''}${len}${mass}`;
-      selBody.appendChild(p);
-      if (def.tip) selBody.insertAdjacentHTML('beforeend', `<p class="hint">${def.tip}</p>`);
-      if (!app.editable) {
-        selBody.insertAdjacentHTML('beforeend', '<p><i>Reset to edit.</i></p>');
-        return;
-      }
-      panel.buttons(selBody, [
-        { label: '⟲', title: 'Rotate left (Q)', onClick: () => app.rotateSelected(1) },
-        { label: '⟳', title: 'Rotate right (E)', onClick: () => app.rotateSelected(-1) },
-        { label: '🗑 Delete', title: 'Delete (Del)', className: 'btn-danger', onClick: () => app.deleteSelected() },
-      ]);
-      if (def.kind === 'motor') {
-        panel.toggle(selBody, {
-          label: 'Reverse direction', checked: !!part.props.reverse,
-          onChange: (v) => app.setPartProp(part.uid, 'reverse', v),
-        });
-        panel.toggle(selBody, {
-          label: '🎮 Drive with ← / → keys', checked: !!part.props.keys,
-          title: 'Off: runs by itself. On: only turns while you hold an arrow key, and brakes when you let go.',
-          onChange: (v) => app.setPartProp(part.uid, 'keys', v),
-        });
-      }
-      if (def.kind === 'spring') {
-        panel.choice(selBody, {
-          label: 'Stiffness', value: part.props.stiffness ?? 'medium',
-          options: [['soft', 'Soft'], ['medium', 'Medium'], ['stiff', 'Stiff']],
-          onChange: (v) => app.setPartProp(part.uid, 'stiffness', v),
-        });
-      }
-      if (def.drawn) selBody.insertAdjacentHTML('beforeend', '<p class="hint">Drag the pink end handles to stretch or swing it.</p>');
-    };
+    const renderSelection = () => renderProps(selBody, app, app.selectedParts(), { actions: true });
     app.on((type) => { if (type === 'select' || type === 'state' || type === 'changed') renderSelection(); });
     renderSelection();
 
@@ -135,15 +92,17 @@ export const sandboxMode = {
     // ---- help ------------------------------------------------------------
     const help = panel.section('How to build', { collapsible: true });
     help.insertAdjacentHTML('beforeend', `<ul class="tips">
-      <li><b>Click</b> a part on the left (or a tool below the world) to pick it, then click as often as you like. <kbd>Esc</kbd> or right-click puts it down.</li>
+      <li><b>Toolbar</b> (under the world): <kbd>1</kbd> Move · <kbd>2</kbd> Rotate · <kbd>3</kbd> Scale · <kbd>4</kbd> Wrench · <kbd>5</kbd> Screwdriver · <kbd>6</kbd> Delete.</li>
+      <li><b>Select:</b> click a part, <kbd>Shift</kbd>-click to add more, or drag a box on empty space. <kbd>Ctrl/⌘+A</kbd> selects all.</li>
+      <li><b>Place:</b> click a part on the left, then click the world as often as you like. <kbd>Esc</kbd> or right-click to stop.</li>
       <li><b>Beams, springs, ropes, sliders, track:</b> drag from one point to another to draw them.</li>
-      <li>Gears <b>snap</b> to mesh (white dot). Stack two gears on one pin for a compound gear.</li>
-      <li><b>Chain:</b> click one sprocket, then another. Same direction, any distance.</li>
-      <li>Things on one point share it: a wheel on a beam hole <b>spins</b>; beams on beams are <b>bolted</b>; add a <b>hinge</b> to let beams pivot.</li>
-      <li><b>Car:</b> draw a beam, put a motor + wheel on one end hole, a wheel on the other. Set the motor to <b>← / →</b> to drive it.</li>
-      <li><b>Train:</b> two drive wheels on a beam, then draw a beam between their yellow <b>crank pins</b> (rotate wheels with <kbd>Q</kbd>/<kbd>E</kbd> so the rod sits below the frame).</li>
-      <li><kbd>Q</kbd>/<kbd>E</kbd> rotate · <kbd>Del</kbd> delete · <kbd>Space</kbd> play/pause</li>
-      <li>Drag empty space to pan, scroll to zoom. Click a part to see its numbers.</li>
+      <li>Gears <b>snap</b> to mesh (white dot). Drop a gear <b>between two gears</b> and it meshes with both.</li>
+      <li><b>Scale</b> a gear for more teeth, a wheel for a bigger tyre, a crate or block for a bigger box.</li>
+      <li><b>Wrench:</b> click a Switch, Button or Key, then a motor. While playing, use the control to run the motor.</li>
+      <li><b>Screwdriver:</b> collisions (normal / everything / none), anchored, and each part's own settings.</li>
+      <li><b>Chain:</b> click one sprocket, then another. <b>Train:</b> draw a beam between two drive wheels' yellow <b>crank pins</b>.</li>
+      <li><kbd>Q</kbd>/<kbd>E</kbd> rotate · <kbd>Del</kbd> delete · <kbd>Ctrl/⌘+C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl/⌘+D</kbd> duplicate · <kbd>Space</kbd> play</li>
+      <li><b>View:</b> right-drag or arrow keys to pan, scroll to zoom.</li>
     </ul>`);
   },
 

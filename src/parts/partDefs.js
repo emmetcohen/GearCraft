@@ -44,6 +44,7 @@ export const CATEGORIES = [
   { id: 'movers',    name: 'Wheels & Power', color: '#ff5d73', icon: '🚗' },
   { id: 'structure', name: 'Structure',      color: '#4ea8de', icon: '📏' },
   { id: 'anchors',   name: 'Anchors',        color: '#2ec4a6', icon: '📌' },
+  { id: 'controls',  name: 'Controls',       color: '#ffd23f', icon: '🎛️' },
   { id: 'world',     name: 'World',          color: '#bcb8b1', icon: '⛰️' },
   { id: 'objects',   name: 'Test Objects',   color: '#a77bca', icon: '📦' },
 ];
@@ -143,6 +144,21 @@ export const PARTS = [
     radius: 0.22, mass: 0, shape: 'rotPin', color: '#2ec4a6',
     tip: 'Holds parts to the background but lets them spin.' },
 
+  // ------------------------------------------------------------- CONTROLS --
+  // Yellow family. Wire them to motors with the Wrench. A control rides on
+  // whatever part it's placed on (or is fixed to the background).
+  { id: 'switch', name: 'Switch', category: 'controls', kind: 'switch', size: 'S',
+    radius: 0.4, mass: 0.1, shape: 'switch', color: '#ffd23f',
+    tip: 'Click it while playing to turn wired motors on or off. Wire it with the Wrench.' },
+  { id: 'button', name: 'Button', category: 'controls', kind: 'button', size: 'S',
+    radius: 0.4, mass: 0.1, shape: 'button', color: '#ef476f',
+    tip: 'Wired motors run while you hold it down (while playing). Wire it with the Wrench.' },
+  { id: 'key-button', name: 'Key', category: 'controls', kind: 'keyButton', size: 'S',
+    radius: 0.4, mass: 0.1, shape: 'keyButton', color: '#e9ecef',
+    tip: 'Wired motors run while you hold its key. Pick the key with the Screwdriver. Wire it with the Wrench.' },
+  // The wire itself is made by the Wrench tool (not from the gallery).
+  { id: 'wire', name: 'Wire', category: 'controls', kind: 'wire', hidden: true, mass: 0, shape: 'wire', color: '#ffd23f' },
+
   // ---------------------------------------------------------------- WORLD --
   // Grey/stone. Part of the map: they never move.
   { id: 'track', name: 'Track', category: 'world', kind: 'track', size: 'L', drawn: true,
@@ -198,15 +214,61 @@ export const hasDef = (id) => BY_ID.has(id);
 /** Lengths of drawn parts snap to this (one beam hole). */
 export const LENGTH_STEP = HOLE_SPACING;
 
-/** The definition of a placed part, with its own length/mass filled in for
- *  drawn parts (beams, springs, ropes, sliders, track). */
+/** Size properties a placed part may override (set by drawing or the Scale tool). */
+const SIZE_KEYS = ['length', 'teeth', 'radius', 'width', 'height'];
+
+/** The definition of a placed part, with its own size (and the mass that
+ *  goes with it) filled in: drawn parts have their own length, and the
+ *  Scale tool can change teeth, radius, width and height. */
 export function partDef(part) {
   const def = getDef(part.type);
-  if (!def.drawn) return def;
-  const length = part.props?.length ?? def.length;
-  if (length === def.length && !def.massPerLength) return def;
-  return { ...def, length, mass: def.massPerLength ? def.massPerLength * length : def.mass };
+  const props = part.props;
+  if (!props || !SIZE_KEYS.some((k) => props[k] != null)) {
+    return def.massPerLength ? { ...def, mass: def.massPerLength * def.length } : def;
+  }
+  const out = { ...def };
+  for (const k of SIZE_KEYS) if (props[k] != null && def[k] != null) out[k] = props[k];
+  // Mass follows size: area for flat things, length for drawn ones.
+  if (def.massPerLength) out.mass = def.massPerLength * out.length;
+  else if (def.mass) {
+    let f = 1;
+    if (def.teeth && out.teeth !== def.teeth) f = (out.teeth / def.teeth) ** 2;
+    else if (def.radius && out.radius !== def.radius) f = (out.radius / def.radius) ** 2;
+    else if (def.width) f = (out.width * out.height) / (def.width * def.height);
+    out.mass = def.mass * f;
+  }
+  if (def.kind === 'sprocket' && out.teeth !== def.teeth) out.radius = out.teeth * 0.06;
+  if (def.pinOffset) out.pinOffset = Math.min(def.pinOffset, out.radius * 0.8);
+  return out;
 }
+
+/**
+ * How the Scale tool resizes a part kind, or null if it can't be scaled.
+ *   key   which size property changes
+ *   min, max, step   limits and snapping
+ *   axis  for boxes: 'x' (width) or 'y' (height) handles
+ */
+export function scaleSpec(def) {
+  switch (def.kind) {
+    case 'gear':     return [{ key: 'teeth', min: 8, max: 64, step: 4, unit: 'teeth' }];
+    case 'sprocket': return [{ key: 'teeth', min: 6, max: 48, step: 2, unit: 'teeth' }];
+    case 'wheel':    return [{ key: 'radius', min: 0.3, max: 3, step: 0.1, unit: 'm' }];
+    case 'ball':     return [{ key: 'radius', min: 0.2, max: 3, step: 0.1, unit: 'm' }];
+    case 'crate':    return [{ key: 'width', axis: 'x', min: 0.4, max: 8, step: 0.2, unit: 'm' },
+                             { key: 'height', axis: 'y', min: 0.4, max: 8, step: 0.2, unit: 'm' }];
+    case 'block': case 'ramp':
+      return [{ key: 'width', axis: 'x', min: 0.5, max: 30, step: 0.5, unit: 'm' },
+              { key: 'height', axis: 'y', min: 0.25, max: 12, step: 0.25, unit: 'm' }];
+    default: return def.drawn ? [{ key: 'length', unit: 'm' }] : null;
+  }
+}
+
+/** Collision modes the Screwdriver can set (props.collide). */
+export const COLLIDE_MODES = [
+  ['normal', 'Normal', 'Bumps into the ground and loose objects, passes through other machine parts.'],
+  ['all', 'Everything', 'Also bumps into other machine parts (e.g. an arm that hits a wall).'],
+  ['none', 'None', 'A ghost: passes through everything, even the ground.'],
+];
 
 /** Parts placed by click-dragging a line. */
 export const isDrawn = (def) => !!def.drawn;
@@ -217,7 +279,8 @@ export const isDrawn = (def) => !!def.drawn;
  *   beam      – structure with holes
  *   driver    – powers an axle (motor, crank)
  *   connector – joins things at a point (pins, axle, hinge)
- *   link      – ties other parts together without sockets (chain, spring, rope)
+ *   link      – ties other parts together without sockets (chain, spring, rope, wire)
+ *   control   – switches/buttons/keys: ride on the part under them, wired to motors
  *   object    – loose test objects (balls, crates) or map pieces (ramps)
  */
 export function roleOf(kind) {
@@ -226,7 +289,8 @@ export function roleOf(kind) {
     case 'beam': case 'slider': return 'beam';
     case 'motor': case 'crank': return 'driver';
     case 'axle': case 'hinge': case 'fixedPin': case 'rotPin': return 'connector';
-    case 'chain': case 'spring': case 'rope': return 'link';
+    case 'chain': case 'spring': case 'rope': case 'wire': return 'link';
+    case 'switch': case 'button': case 'keyButton': return 'control';
     default: return 'object';
   }
 }

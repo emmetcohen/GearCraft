@@ -26,12 +26,15 @@ const { World, Vec2, Circle, Box, Polygon, RevoluteJoint, GearJoint, MouseJoint,
 // Collision categories (bit flags). Machine parts don't collide with each
 // other — gears are connected by math, not by teeth bumping — but everything
 // collides with the ground and with test objects.
-export const CAT = { GROUND: 0x1, OBJECT: 0x2, MACHINE: 0x4, WHEEL: 0x8 };
+// SOLID = a machine part set to "Collisions: Everything" with the
+// Screwdriver: it also bumps into other machine parts.
+export const CAT = { GROUND: 0x1, OBJECT: 0x2, MACHINE: 0x4, WHEEL: 0x8, SOLID: 0x10 };
 const MASK = {
   [CAT.GROUND]: 0xffff,
   [CAT.OBJECT]: 0xffff,
-  [CAT.MACHINE]: CAT.GROUND | CAT.OBJECT,
-  [CAT.WHEEL]: CAT.GROUND | CAT.OBJECT,
+  [CAT.MACHINE]: CAT.GROUND | CAT.OBJECT | CAT.SOLID,
+  [CAT.WHEEL]: CAT.GROUND | CAT.OBJECT | CAT.SOLID,
+  [CAT.SOLID]: 0xffff,
 };
 
 /** Physics time step. Small steps + many iterations keep gear chains stiff. */
@@ -75,12 +78,15 @@ export class Simulation {
     this.fixtures = [];           // [{ fixture, baseFriction }]
     this.links = new Map();       // spring/rope uid -> { bodyA, la, bodyB, lb, joint }
     this.throttle = 0;            // -1..1 from the arrow keys, for key-driven motors
+    this.signals = new Map();     // control uid -> on? (switches, buttons, keys)
+    this.wires = new Map();       // motor uid -> [control uids wired to it]
 
     this._createBodies(map);
     this._createRevolutes();
     this._createPrismatics();
     this._createGearJoints();
     this._createLinks();
+    this._createWires();
     this.applySettings(settings);
 
     this.grab = null;        // mouse joint on a loose body
@@ -122,7 +128,14 @@ export class Simulation {
     const c = Vec2(lx, ly);
     const at = (dx, dy) => Vec2(lx + dx * Math.cos(a) - dy * Math.sin(a), ly + dx * Math.sin(a) + dy * Math.cos(a));
     const mass = def.mass || 0.1;
-    const add = (shape, area, opts) => this._addFixture(body, shape, { density: mass / area, ...opts });
+    // Screwdriver collision setting: 'normal' | 'all' (hits machine parts too) | 'none' (ghost).
+    const collide = part.props?.collide ?? 'normal';
+    const add = (shape, area, opts) => {
+      const o = { density: mass / area, ...opts };
+      if (collide === 'none') o.sensor = true;
+      else if (collide === 'all' && !o.sensor && (o.cat === CAT.MACHINE || o.cat === CAT.WHEEL)) o.cat = CAT.SOLID;
+      return this._addFixture(body, shape, o);
+    };
 
     switch (def.kind) {
       case 'gear': case 'compoundGear': {
@@ -166,6 +179,9 @@ export class Simulation {
         break;
       case 'axle': case 'hinge':
         add(Circle(c, 0.16), 0.08, { cat: CAT.MACHINE, sensor: true, density: 1 });
+        break;
+      case 'switch': case 'button': case 'keyButton':
+        add(Circle(c, def.radius), Math.PI * def.radius ** 2, { cat: CAT.MACHINE, sensor: true });
         break;
       case 'ball':
         add(Circle(c, def.radius), Math.PI * def.radius ** 2,
@@ -281,6 +297,41 @@ export class Simulation {
     }
   }
 
+  /** Wires: which controls drive which motors. Switches start in their saved state. */
+  _createWires() {
+    for (const part of this.parts) {
+      const kind = getDef(part.type).kind;
+      if (kind === 'switch') this.signals.set(part.uid, !!part.props.on);
+      if (kind === 'button' || kind === 'keyButton') this.signals.set(part.uid, false);
+      if (kind !== 'wire') continue;
+      const a = this.byUid.get(part.props.a), b = this.byUid.get(part.props.b);
+      if (!a || !b) continue;
+      const [ctl, motor] = roleOf(getDef(a.type).kind) === 'control' ? [a, b] : [b, a];
+      if (getDef(motor.type).kind !== 'motor') continue;
+      if (!this.wires.has(motor.uid)) this.wires.set(motor.uid, []);
+      this.wires.get(motor.uid).push(ctl.uid);
+    }
+  }
+
+  /** Turn a control on/off (click a switch, hold a button or key). */
+  setSignal(uid, on) {
+    if (this.signals.get(uid) === on) return;
+    this.signals.set(uid, on);
+    for (const [motorUid, ctls] of this.wires) {
+      if (!ctls.includes(uid)) continue;
+      const d = this.driverJoints.get(motorUid);
+      if (d && !this.jammedBodies.has(d.bodyId)) { this._driveMotor(d); d.joint.getBodyB().setAwake(true); }
+    }
+  }
+
+  /** Flip a switch. */
+  toggleSwitch(uid) { this.setSignal(uid, !this.signals.get(uid)); }
+
+  /** Key controls bound to this key (lower-case key name). */
+  keyControls(key) {
+    return this.parts.filter((p) => getDef(p.type).kind === 'keyButton' && (p.props.key ?? 'w') === key).map((p) => p.uid);
+  }
+
   /** Current world positions of a spring's or rope's two ends. */
   linkEnds(uid) {
     const l = this.links.get(uid);
@@ -345,11 +396,22 @@ export class Simulation {
 
   _driveMotor(d) {
     const dir = d.part.props.reverse ? -1 : 1;
-    // Key-driven motors: → turns clockwise (rolls a car right), ← back,
-    // no key = hold still (a brake).
-    const amount = d.part.props.keys ? -this.throttle : 1;
+    // A motor with wires or arrow-key control only runs when told to:
+    //   arrow keys: → turns clockwise (rolls a car right), ← back
+    //   wired controls: each one that's on adds +1 (or -1 if set to Reverse)
+    // With nothing pressed it brakes (or spins freely if its idle mode is 'free').
+    const ctls = this.wires.get(d.part.uid);
+    let amount = 1;
+    if (d.part.props.keys || ctls) {
+      amount = d.part.props.keys ? -this.throttle : 0;
+      for (const uid of ctls || []) {
+        if (this.signals.get(uid)) amount += this.byUid.get(uid).props.reverse ? -1 : 1;
+      }
+      amount = Math.max(-1, Math.min(1, amount));
+    }
+    const idleFree = amount === 0 && d.part.props.idle === 'free';
     d.joint.setMotorSpeed(dir * amount * rpmToRad(this.settings.motorRpm));
-    d.joint.setMaxMotorTorque(this.settings.motorTorque);
+    d.joint.setMaxMotorTorque(idleFree ? AXLE_FRICTION * this.settings.friction : this.settings.motorTorque);
   }
 
   /** Arrow-key input for key-driven motors: -1 (←), 0 or 1 (→). */

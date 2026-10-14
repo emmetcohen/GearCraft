@@ -35,6 +35,53 @@ function socketLabel(def, socket) {
   }
 }
 
+/** "Gear 24T", using a scaled gear's own tooth count. */
+function gearName(part) {
+  const def = partDef(part);
+  return def.kind === 'gear' ? `Gear ${def.teeth}T` : def.name;
+}
+
+/** How close (world units) the pointer must be to a spot that meshes two gears at once. */
+export const DOUBLE_MESH_SNAP = 1.5;
+
+/**
+ * A gear dropped near the gap between two gears: the spot where it meshes
+ * with BOTH (an idler between them). Each gear's mesh distance is a circle
+ * around it; the spots are where those two circles cross.
+ * @returns {{ x, y, angle, hint }} or null
+ */
+export function doubleMesh(others, def, x, y, angle) {
+  const circles = others.flatMap(gearCirclesOf);
+  const r = gearLayers(def)[0].r;
+  let best = null;
+  for (let i = 0; i < circles.length; i++) {
+    for (let j = i + 1; j < circles.length; j++) {
+      const a = circles[i], b = circles[j];
+      if (a.uid === b.uid) continue;
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+      if (d < 1e-6) continue; // stacked on one axle
+      const ra = a.r + r, rb = b.r + r;
+      if (d > ra + rb || d < Math.abs(ra - rb)) continue; // can't touch both
+      const along = (ra * ra - rb * rb + d * d) / (2 * d);
+      const h = Math.sqrt(Math.max(0, ra * ra - along * along));
+      const mx = a.x + (dx * along) / d, my = a.y + (dy * along) / d;
+      for (const sgn of [1, -1]) {
+        const px = mx - (dy / d) * h * sgn, py = my + (dx / d) * h * sgn;
+        const err = Math.hypot(px - x, py - y);
+        if (err > DOUBLE_MESH_SNAP || (best && err >= best.err)) continue;
+        // Don't land overlapping some third gear.
+        const clash = circles.some((c) => c.uid !== a.uid && c.uid !== b.uid &&
+          Math.hypot(px - c.x, py - c.y) < c.r + r - MESH_TOL);
+        if (clash) continue;
+        best = { err, x: px, y: py, a, b };
+      }
+    }
+  }
+  if (!best) return null;
+  const pa = others.find((p) => p.uid === best.a.uid), pb = others.find((p) => p.uid === best.b.uid);
+  return { x: best.x, y: best.y, angle, hint: `meshes with ${gearName(pa)} + ${gearName(pb)}` };
+}
+
 /** Nearest socket of `others` to (x, y) within `radius`. */
 function nearestSocket(others, x, y, radius) {
   let best = null;
@@ -66,11 +113,11 @@ export function meshPhase(a, aAngle, bx, by, nB) {
  * @param type    part type being placed/moved
  * @param x,y     where the pointer wants it
  * @param angle   current rotation
- * @param opts    { excludeUid, grid: boolean }
+ * @param opts    { excludeUid, grid: boolean, props: the part's own props (size overrides) }
  * @returns {{ x, y, angle, hint: string|null }}
  */
 export function snapPart(parts, type, x, y, angle, opts = {}) {
-  const def = opts.length != null ? partDef({ type, props: { length: opts.length } }) : getDef(type);
+  const def = partDef({ type, props: opts.props ?? {} });
   const role = roleOf(def.kind);
   const others = parts.filter((p) => p.uid !== opts.excludeUid);
   const useGrid = opts.grid !== false;
@@ -89,7 +136,7 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
     return out;
   }
 
-  if (role === 'object' || role === 'link') {
+  if (role === 'object' || role === 'link' || role === 'control') {
     // Loose objects go wherever you drop them (ramps snap to the grid).
     if (useGrid && (def.kind === 'ramp' || def.kind === 'block')) {
       out.x = roundTo(x, GRID / 2); out.y = roundTo(y, GRID / 2);
@@ -114,7 +161,10 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
   const s = nearestSocket(others, x, y, SOCKET_SNAP);
   if (s) {
     out = { x: s.x, y: s.y, angle, hint: socketLabel(getDef(s.part.type), s.socket) };
+  } else if ((def.kind === 'gear' || def.kind === 'compoundGear') && (out = doubleMesh(others, def, x, y, angle))) {
+    // Dropped between two gears: sits where it meshes with BOTH.
   } else if (def.kind === 'gear' || def.kind === 'compoundGear') {
+    out = { x, y, angle, hint: null };
     // Mesh snap: find the gear circle whose "touching distance" is closest.
     let best = null;
     const mine = gearLayers(def);
@@ -135,7 +185,13 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
     }
     if (best) {
       const other = parts.find((p) => p.uid === best.c.uid);
-      out = { x: best.x, y: best.y, angle, hint: `meshes with ${getDef(other.type).name}` };
+      out = { x: best.x, y: best.y, angle, hint: `meshes with ${gearName(other)}` };
+      // Pointer between two gears this one can't span? Say so.
+      const r = mine[0].r;
+      const far = others.flatMap(gearCirclesOf).find((c) => c.uid !== best.c.uid &&
+        Math.hypot(x - c.x, y - c.y) - (c.r + r) > MESH_TOL && Math.hypot(x - c.x, y - c.y) - (c.r + r) < 1.6 &&
+        Math.hypot(c.x - best.c.x, c.y - best.c.y) > best.c.r + c.r);
+      if (far) out.hint += ` · too small to reach ${gearName(parts.find((p) => p.uid === far.uid))} too`;
     } else if (useGrid) {
       out.x = roundTo(x, GRID); out.y = roundTo(y, GRID);
     }
@@ -152,8 +208,8 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
         if (Math.abs(d - (c.r + m.r)) < MESH_TOL) {
           const other = others.find((p) => p.uid === c.uid);
           out.angle = meshPhase(c, other.angle, out.x, out.y, m.teeth);
-          if (!out.hint) out.hint = `meshes with ${getDef(other.type).name}`;
-          else if (!out.hint.includes('meshes')) out.hint += ` · meshes with ${getDef(other.type).name}`;
+          if (!out.hint) out.hint = `meshes with ${gearName(other)}`;
+          else if (!out.hint.includes('meshes')) out.hint += ` · meshes with ${gearName(other)}`;
           break outer;
         }
       }

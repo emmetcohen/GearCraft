@@ -31,6 +31,8 @@ export class Camera {
 function layerOf(def) {
   if (def.kind === 'ramp' || def.kind === 'block' || def.kind === 'track') return 0;
   if (def.kind === 'chain') return 4;
+  if (def.kind === 'wire') return 7;
+  if (roleOf(def.kind) === 'control') return 5.8;
   if (def.kind === 'slider') return 1.5; // rail sits on top of the beam it's bolted to
   if (def.kind === 'spring' || def.kind === 'rope') return 5.5;
   if (roleOf(def.kind) === 'beam') return 1;
@@ -71,12 +73,14 @@ export class Renderer {
 
     const drawOne = (p, def, layer) => {
       if (def.kind === 'chain') return this._chain(scene, p, byUid);
+      if (def.kind === 'wire') return this._wire(scene, p, byUid);
       if (def.kind === 'spring' || def.kind === 'rope') return this._link(scene, p, def);
       const t = scene.transformOf(p.uid, layer);
       if (!t) return;
       const s = camera.worldToScreen(t.x, t.y);
       drawPart(ctx, def, { sx: s.x, sy: s.y, angle: t.angle }, px, {
         layer, load: scene.loadOf(p.uid), loadView: scene.loadView, squash: scene.squashOf(p.uid),
+        on: scene.signalOf?.(p.uid), props: p.props,
       });
     };
     for (const { p, def } of parts) drawOne(p, def, 'main');
@@ -93,11 +97,49 @@ export class Renderer {
     const ta = scene.transformOf(pa.uid), tb = scene.transformOf(pb.uid);
     if (!ta || !tb) return;
     const z = this.camera.zoom;
-    const ra = (chainRadius(getDef(pa.type)) + 0.05) * z, rb = (chainRadius(getDef(pb.type)) + 0.05) * z;
+    const ra = (chainRadius(partDef(pa)) + 0.05) * z, rb = (chainRadius(partDef(pb)) + 0.05) * z;
     const sa = this.camera.worldToScreen(ta.x, ta.y), sb = this.camera.worldToScreen(tb.x, tb.y);
-    const state = scene.selectedUid === part.uid ? 'selected' : scene.badChains?.has(part.uid) ? 'bad' : 'ok';
+    const state = scene.selection?.has(part.uid) ? 'selected' : scene.badChains?.has(part.uid) ? 'bad' : 'ok';
     // Links travel with sprocket A's rotation (screen y is flipped, hence +).
     drawChain(this.ctx, { x: sa.x, y: sa.y, r: ra }, { x: sb.x, y: sb.y, r: rb }, ta.angle * ra, state);
+  }
+
+  /** An electric wire from a control to a motor (edit mode only). */
+  _wire(scene, part, byUid) {
+    if (scene.mode !== 'edit') return;
+    const pa = byUid.get(part.props.a), pb = byUid.get(part.props.b);
+    if (!pa || !pb) return;
+    const a = this.camera.worldToScreen(pa.x, pa.y), b = this.camera.worldToScreen(pb.x, pb.y);
+    const { ctx } = this;
+    const strong = scene.wiresStrong || scene.selection?.has(part.uid);
+    ctx.save();
+    ctx.globalAlpha = strong ? 1 : 0.45;
+    // A gentle droop, like a real cable.
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 + Math.min(60, Math.hypot(b.x - a.x, b.y - a.y) * 0.18);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.quadraticCurveTo(mx, my, b.x, b.y);
+    ctx.lineCap = 'round';
+    if (scene.selection?.has(part.uid)) { ctx.strokeStyle = '#ff006e'; ctx.lineWidth = 9; ctx.stroke(); }
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 5;
+    ctx.stroke();
+    ctx.strokeStyle = '#ffd23f';
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([8, 5]);
+    ctx.lineDashOffset = -performance.now() / 50; // current flowing to the motor
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const p of [a, b]) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffd23f';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = OUTLINE;
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   /** A spring or rope between its two (live) ends. */
@@ -269,34 +311,82 @@ export class Renderer {
       }
       ctx.restore();
     };
-    if (scene.hoverUid !== scene.selectedUid) {
+    if (!scene.selection?.has(scene.hoverUid)) {
       ring(scene.hoverUid, () => { ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,0,110,0.35)'; });
     }
-    ring(scene.selectedUid, () => {
-      ctx.setLineDash([6, 5]);
-      ctx.lineDashOffset = -performance.now() / 40; // marching ants
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = '#ff006e';
-    });
+    for (const uid of scene.selection || []) {
+      ring(uid, () => {
+        ctx.setLineDash([6, 5]);
+        ctx.lineDashOffset = -performance.now() / 40; // marching ants
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#ff006e';
+      });
+    }
     // Chain tool: the first sprocket you picked.
     ring(scene.pickedUid, () => { ctx.lineWidth = 4; ctx.strokeStyle = '#ffd23f'; });
 
-    // Stretch handles on a selected drawn part (beam, spring, rope, slider, track).
+    // Rotate tool: a ring round the selection with a knob to drag.
+    if (scene.rotateGizmo) {
+      const g = scene.rotateGizmo;
+      const c = camera.worldToScreen(g.x, g.y);
+      const r = g.r * px + 18;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+      ctx.stroke();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#3a86ff';
+      ctx.setLineDash([10, 6]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const k = { x: c.x + Math.cos(-g.angle) * r, y: c.y + Math.sin(-g.angle) * r };
+      ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(k.x, k.y);
+      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(58,134,255,0.6)'; ctx.stroke();
+      ctx.beginPath(); ctx.arc(k.x, k.y, 9, 0, Math.PI * 2);
+      ctx.fillStyle = '#3a86ff'; ctx.fill();
+      ctx.lineWidth = 2.5; ctx.strokeStyle = '#fff'; ctx.stroke();
+      ctx.beginPath(); ctx.arc(c.x, c.y, 4, 0, Math.PI * 2); ctx.fillStyle = '#3a86ff'; ctx.fill();
+      if (g.label) this._bubble(c.x, c.y - r - 22, g.label, '#ffffff');
+      ctx.restore();
+    }
+
+    // Handles: pink circles stretch drawn parts, blue squares scale.
     for (const h of scene.handles || []) {
       const s = camera.worldToScreen(h.x, h.y);
       ctx.beginPath();
-      ctx.arc(s.x, s.y, 7, 0, Math.PI * 2);
-      ctx.fillStyle = '#ff006e';
+      if (h.kind === 'scale') ctx.roundRect(s.x - 7, s.y - 7, 14, 14, 3);
+      else ctx.arc(s.x, s.y, 7, 0, Math.PI * 2);
+      ctx.fillStyle = h.kind === 'scale' ? '#3a86ff' : '#ff006e';
       ctx.fill();
       ctx.lineWidth = 2.5;
       ctx.strokeStyle = '#ffffff';
       ctx.stroke();
     }
+    if (scene.handleLabel) {
+      const s = camera.worldToScreen(scene.handleLabel.x, scene.handleLabel.y);
+      this._bubble(s.x, s.y - 24, scene.handleLabel.text, '#ffffff');
+    }
+
+    // Drag-select box.
+    if (scene.marquee) {
+      const m = scene.marquee;
+      const a = camera.worldToScreen(m.x0, m.y0), b = camera.worldToScreen(m.x1, m.y1);
+      ctx.save();
+      ctx.fillStyle = m.del ? 'rgba(239,35,60,0.12)' : 'rgba(58,134,255,0.12)';
+      ctx.strokeStyle = m.del ? '#ef233c' : '#3a86ff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      ctx.restore();
+    }
 
     // Placement ghost + snap hint.
     if (scene.ghost) {
       const g = scene.ghost;
-      const def = g.length != null ? partDef({ type: g.type, props: { length: g.length } }) : getDef(g.type);
+      const def = g.length != null ? partDef({ type: g.type, props: { length: g.length } }) : partDef({ type: g.type, props: g.props ?? {} });
       const s = camera.worldToScreen(g.x, g.y);
       if (!g.hintOnly) drawPart(ctx, def, { sx: s.x, sy: s.y, angle: g.angle }, px, { ghost: true });
       if (!g.hintOnly && hasHub(def.kind)) {

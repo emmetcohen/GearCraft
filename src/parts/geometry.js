@@ -70,7 +70,7 @@ export function lineFrom(a, b) {
 export function socketsOf(part) {
   const def = partDef(part);
   const role = roleOf(def.kind);
-  if (role === 'object' || role === 'link') return [];
+  if (role === 'object' || role === 'link' || role === 'control') return [];
   if (role === 'beam') {
     const out = holesOf(def).map((lx, index) => ({
       ...localToWorld(part.x, part.y, part.angle, lx, 0), index, sub: 'main', pivot: false,
@@ -143,6 +143,7 @@ export function hitTest(part, wx, wy) {
  *  clicking a pin on a gear selects the pin. Higher = picked first. */
 export function pickPriority(def) {
   if (def.kind === 'spring' || def.kind === 'rope') return 3.5;
+  if (roleOf(def.kind) === 'control') return 5;
   if (def.kind === 'track') return 0;
   switch (roleOf(def.kind)) {
     case 'connector': return 4;
@@ -173,10 +174,24 @@ export function pickPart(parts, wx, wy) {
 
 /** Gear circles of a placed part in world space: [{ uid, layer, teeth, r, x, y }]. */
 export function gearCirclesOf(part) {
-  const def = getDef(part.type);
+  const def = partDef(part);
   return gearLayers(def).map((g, layer) => ({
     uid: part.uid, layer, teeth: g.teeth, r: g.r, x: part.x, y: part.y,
   }));
 }
 
 export const dist = (ax, ay, bx, by) => Math.hypot(bx - ax, by - ay);
+
+/** Axis-aligned bounds of a placed part (world units): { x0, y0, x1, y1 }. */
+export function boundsOf(part) {
+  const def = partDef(part);
+  let hx, hy;
+  if (def.drawn) { hx = def.length / 2 + def.thickness / 2; hy = Math.max(def.thickness / 2, 0.15); }
+  else if (def.width != null) { hx = def.width / 2; hy = def.height / 2; }
+  else if (def.kind === 'motor') { hx = hy = def.housing / 2; }
+  else { hx = hy = outerRadius(def); }
+  // Rotate the box's corners and take their extent.
+  const c = Math.abs(Math.cos(part.angle)), s = Math.abs(Math.sin(part.angle));
+  const ex = hx * c + hy * s, ey = hx * s + hy * c;
+  return { x0: part.x - ex, y0: part.y - ey, x1: part.x + ex, y1: part.y + ey };
+}

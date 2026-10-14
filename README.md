@@ -50,26 +50,36 @@ needs configuring. (`.nojekyll` tells Pages to serve the files as-is.)
 
 ## How to play
 
+GearCraft builds like **Build a Boat**: pick a tool from the **toolbar** under
+the world, and it works on whatever you've selected.
+
+| Tool | Key | What it does |
+|---|---|---|
+| ✥ **Move** | **1** / **V** | Click to select, **Shift**-click to add/remove, drag a box on empty space to select many. Drag to move the whole selection. Drag a beam's pink end handles to stretch it. |
+| ⟳ **Rotate** | **2** | Drag the blue ring (or a selected part) to turn the selection in 15° steps (**Alt** = any angle). **Q** / **E** also rotate. |
+| ⤢ **Scale** | **3** | Click a part and drag its blue handle: gears get more teeth, wheels and balls get bigger, crates/blocks/ramps get wider or taller. |
+| 🔧 **Wrench** | **4** | Wire a **Switch**, **Button** or **Key** to a motor: click one, then the other. Click the same pair again to cut the wire. |
+| 🪛 **Screwdriver** | **5** | Click parts (Shift / box for several) to set **Collisions** (normal / everything / none), **Anchored**, and each part's own settings (motor direction, spring stiffness, which key a Key listens to...). |
+| 🔨 **Delete** | **6** | Click a part to remove it, or drag a box to remove everything inside. |
+
 | Do this | How |
 |---|---|
-| Place a part | Drag it from the gallery onto the world, **or click it** to pick it as a tool and click the world as often as you like |
-| Put the tool down | **Esc**, **right-click**, **V**, or click the part again |
-| Draw beams, springs, ropes, sliders, track | Pick the tool, then **drag from one point to the other** (or click, click). Ends snap onto holes, pins and shafts; **Alt** = any angle |
-| Stretch / swing a drawn part | Select it and drag its pink end handles |
+| Place a part | Drag it from the gallery onto the world, **or click it** and click the world as often as you like |
+| Stop placing / cancel | **Esc** or **right-click** |
+| Draw beams, springs, ropes, sliders, track | Pick it, then **drag from one point to the other** (or click, click). **Alt** = any angle |
+| Idler gear | Drop a gear **between two gears**: it snaps to mesh with both at once |
 | Chain | Pick **Chain** (**C**), click one sprocket or gear, then another |
-| Quick tools | The dock under the world, or keys: **B** beam · **A** axle · **H** hinge · **P** rotating pin · **F** fixed pin · **C** chain · **S** spring · **O** rope · **J** slider · **T** track |
-| Move | Drag a placed part |
-| Numbers (RPM, torque, ratio) | Click a gear, wheel or motor |
-| Rotate | **Q** / **E** (or the ⟲ ⟳ buttons) |
-| Delete | **Del** / **Backspace** |
+| Part shortcuts | **B** beam · **A** axle · **H** hinge · **P** rotating pin · **F** fixed pin · **C** chain · **S** spring · **O** rope · **J** slider · **T** track |
+| Copy / paste / duplicate | **Ctrl/⌘+C**, **Ctrl/⌘+V** (pastes at the mouse), **Ctrl/⌘+D** · **Ctrl/⌘+A** selects all |
+| Numbers (RPM, torque, ratio) | Click a gear, wheel or motor (Move tool) |
+| Delete | **Del** / **Backspace**, or the Delete tool |
 | Undo / redo | **Ctrl/⌘+Z**, **Ctrl/⌘+Shift+Z** (or **Ctrl+Y**) |
 | Play / pause | **Space** |
 | Reset to your pre-play build | ⟲ Reset, or **R** while running |
-| Pan / zoom | Drag empty space (or right/middle-drag), mouse wheel, **Home** recentres |
+| Pan / zoom | Right- or middle-drag, or the arrow keys · mouse wheel zooms · **Home** recentres |
 | Load view | Toggle in the right panel, or **L** |
 | Save / load / share | 💾 Save / Load (**Ctrl/⌘+S**): named slots, examples, export/import `.json` |
-| Drive | Tick **Drive with ← / → keys** on a motor, then hold **←** / **→** while running |
-| While running | Drag a **hand crank's** handle in circles to turn it. Grab loose objects to fling them. Select a part and the camera follows it. |
+| While running | Click **switches**, hold **buttons** or their **keys**. Arrow keys drive motors set to "Drive with ← / →". Drag a **hand crank's** handle in circles. Grab loose objects to fling them. Select a part and the camera follows it. |
 
 ### Building rules (how parts join)
 
@@ -90,6 +100,8 @@ freely, yellow = driven.
 - A **slider** is a rail with a sliding block. The rail is bolted to the background unless something holds its end holes; hook a rod from a crank pin onto the block for a piston.
 - **Springs** and **ropes** grab whatever their ends touch (a socket, or any part). An end touching nothing hangs on the background (shown with a little green pin).
 - **Track** is part of the map: lay roads, hills and bridges; ends snap together.
+- **Controls** (switch, button, key) ride on whatever part they're placed on. A motor with wires only runs while a wired control is on (a control set to *Reverse* runs it backwards); with nothing on it brakes, or spins free if you set that with the Screwdriver.
+- An **anchored** part is bolted to the background. **Collisions: Everything** makes a machine part bump into other machine parts too; **None** makes it a ghost.
 - With **Auto-pin gears** on, a gear or sprocket dropped in empty space gets a rotating pin automatically.
 
 ### The gear maths

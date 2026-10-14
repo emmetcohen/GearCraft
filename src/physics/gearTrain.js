@@ -29,7 +29,7 @@
 // inertia and stalling for us.
 // =============================================================================
 import { gearCirclesOf } from '../parts/geometry.js';
-import { getDef, chainTeeth, chainRadius } from '../parts/partDefs.js';
+import { getDef, partDef, chainTeeth, chainRadius } from '../parts/partDefs.js';
 import { WORLD, mainKey } from './assembly.js';
 
 /** How close (world units) centre distance must be to r1 + r2 to count as meshed. */
@@ -60,7 +60,7 @@ export function findChains(parts) {
     if (getDef(p.type).kind !== 'chain') continue;
     const pa = byUid.get(p.props.a), pb = byUid.get(p.props.b);
     if (!pa || !pb) continue;
-    const da = getDef(pa.type), db = getDef(pb.type);
+    const da = partDef(pa), db = partDef(pb);
     if (!chainTeeth(da) || !chainTeeth(db)) continue;
     out.push({
       chain: true, uid: p.uid,

@@ -436,5 +436,112 @@ test('track: wheels roll on drawn track laid above the ground', () => {
   near(sim.transformOf(ball.uid).y, 3.15 + 0.5, 0.05, 'ball rests on the track');
 });
 
+
+console.log('\nBuild-a-Boat tools — scale, screwdriver properties, wires, double mesh');
+
+test('double mesh: a gear dropped between two gears meshes with both at once', () => {
+  const b = emptyBuild();
+  addPart(b, 'gear-12', 0, 0); addPart(b, 'gear-12', 4, 0);      // 4 apart: a 12T can't span it, a 16T+ can
+  const s = snapPart(b.parts, 'gear-16', 2, 0.9, 0);
+  near(Math.hypot(s.x - 0, s.y - 0), 1.2 + 1.6, 1e-9, 'meshes the left gear');
+  near(Math.hypot(s.x - 4, s.y - 0), 1.2 + 1.6, 1e-9, 'meshes the right gear');
+  assert(s.hint.includes('+'), `hint names both gears: ${s.hint}`);
+  addPart(b, 'pin-rotating', 0, 0); addPart(b, 'pin-rotating', 4, 0); addPart(b, 'pin-rotating', s.x, s.y);
+  const mid = addPart(b, 'gear-16', s.x, s.y, s.angle);
+  const right = b.parts[1];
+  b.parts[0].type = 'gear-12'; addPart(b, 'motor', 0, 0);
+  near(driveRatio(b, right.uid).ratio, 1, 1e-9, 'idler passes the motor speed straight through');
+  assert(findMeshes(b.parts).filter((m) => m.a.uid === mid.uid || m.b.uid === mid.uid).length === 2, 'two meshes');
+});
+
+test('double mesh: says when the gear is too small to reach both', () => {
+  const b = emptyBuild();
+  addPart(b, 'gear-12', 0, 0); addPart(b, 'gear-12', 6, 0);
+  const s = snapPart(b.parts, 'gear-12', 2.2, 0.3, 0);
+  assert(s.hint.includes('too small'), s.hint);
+});
+
+test('scale: a gear scaled from 12T to 24T meshes and gears down like a 24T', () => {
+  const b = emptyBuild();
+  addPart(b, 'motor', 0, 4); addPart(b, 'gear-12', 0, 4);
+  addPart(b, 'pin-rotating', 3.6, 4); const g = addPart(b, 'gear-12', 3.6, 4, 0, { teeth: 24 });
+  near(driveRatio(b, g.uid).ratio, -0.5, 1e-9, 'ratio');
+  near(partDef(g).mass, 2.4, 1e-9, 'mass grows with area');
+});
+
+test('scale: a bigger wheel rolls a car further per turn', () => {
+  const dist = (r) => {
+    const { b, chassis } = carBuild();
+    for (const p of b.parts) { p.y = r; if (p.type === 'wheel-m') p.props.radius = r; } // axles at wheel height
+    const sim = new Simulation(b, SETTINGS, MAP); run(sim, 3);
+    return Math.abs(sim.transformOf(chassis.uid).x);
+  };
+  assert(dist(1.5) > dist(1.0) * 1.15, 'bigger wheels go further');
+});
+
+test('screwdriver: an anchored beam stays put in mid-air', () => {
+  const b = emptyBuild();
+  const beam = addPart(b, 'beam', 0, 6, 0, { length: 4, anchored: true });
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1);
+  near(sim.transformOf(beam.uid).y, 6, 1e-6, 'did not fall');
+});
+
+test('screwdriver: an anchored crate is a wall a ball bounces off', () => {
+  const b = emptyBuild();
+  const crate = addPart(b, 'crate', 0, 3, 0, { anchored: true });
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1);
+  near(sim.transformOf(crate.uid).y, 3, 1e-6, 'crate hangs in the air');
+});
+
+test('screwdriver: collisions "none" falls through the ground, "all" lands on a beam', () => {
+  const b = emptyBuild();
+  const ghost = addPart(b, 'wheel-m', 0, 3, 0, { collide: 'none' });
+  addPart(b, 'beam', 5, 2, 0, { length: 4, anchored: true });
+  const solid = addPart(b, 'wheel-s', 5, 4, 0, { collide: 'all' });
+  const normal = addPart(b, 'wheel-s', 6, 4);
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1.5);
+  assert(sim.transformOf(ghost.uid).y < -1, 'ghost wheel fell through the ground');
+  near(sim.transformOf(solid.uid).y, 2 + 0.22 + 0.6, 0.06, '"all" wheel rests on the beam');
+  assert(sim.transformOf(normal.uid).y < 1, 'normal wheel passes through the beam to the ground');
+});
+
+/** A motor on a pin with a gear, wired to a control. */
+function wiredBuild(ctlType, ctlProps = {}) {
+  const b = emptyBuild();
+  const motor = addPart(b, 'motor', 0, 4); const g = addPart(b, 'gear-12', 0, 4);
+  const ctl = addPart(b, ctlType, 4, 4, 0, ctlProps);
+  addPart(b, 'wire', 2, 4, 0, { a: ctl.uid, b: motor.uid });
+  return { b, motor, g, ctl };
+}
+
+test('wire: a switch turns its motor on and off', () => {
+  const { b, g, ctl } = wiredBuild('switch');
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 0.5);
+  near(sim.readout(g.uid).rpm, 0, 0.5, 'off at start');
+  sim.toggleSwitch(ctl.uid); run(sim, 1);
+  near(sim.readout(g.uid).rpm, 30, 0.5, 'on');
+  sim.toggleSwitch(ctl.uid); run(sim, 1);
+  near(sim.readout(g.uid).rpm, 0, 0.5, 'off again (brakes)');
+});
+
+test('wire: a key set to Reverse runs the motor backwards while held', () => {
+  const { b, g, ctl } = wiredBuild('key-button', { key: 'a', reverse: true });
+  const sim = new Simulation(b, SETTINGS, MAP);
+  assert(sim.keyControls('a').includes(ctl.uid), 'bound to A');
+  for (const uid of sim.keyControls('a')) sim.setSignal(uid, true);
+  run(sim, 1);
+  near(sim.readout(g.uid).rpm, -30, 0.5, 'reverse while held');
+});
+
+test('controls ride on the part under them', () => {
+  const b = emptyBuild();
+  const beam = addPart(b, 'beam', 0, 3, 0, { length: 4 });
+  const sw = addPart(b, 'switch', 1.2, 3);
+  const asm = buildAssembly(b.parts);
+  assert(asm.bodyOf(mainKey(sw.uid)) === asm.bodyOf(mainKey(beam.uid)), 'switch is part of the beam body');
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1);
+  assert(sim.transformOf(sw.uid).y < 1, 'switch fell with the beam');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
