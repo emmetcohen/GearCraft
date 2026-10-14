@@ -115,7 +115,7 @@ export const PARTS = [
   // a free bottom end is fixed to the background.
   { id: 'piston', name: 'Piston', category: 'movers', kind: 'piston', size: 'M', drawn: true,
     length: 2.4, thickness: 0.5, massPerLength: 0.5, shape: 'piston', color: '#8338ec',
-    tip: 'Drag to draw it. It pushes out and pulls back on its own, or give it keys / wire a switch. Both ends pivot on what they touch.' },
+    tip: 'Drag to draw it. It pushes out and pulls back on its own, or give it keys / wire a switch. Its ends pivot; put BOTH yellow base joints on a beam and it can\'t swing.' },
   { id: 'crank', name: 'Hand Crank', category: 'movers', kind: 'crank', size: 'M',
     armLength: 1.0, mass: 0.5, shape: 'crank', color: '#ff70a6',
     tip: 'Human power! While playing, drag the handle around to turn it.' },
@@ -301,6 +301,10 @@ export function scaleSpec(def) {
     default: return def.drawn ? [{ key: 'length', unit: 'm' }] : null;
   }
 }
+
+/** A piston's second base joint: this far up the cylinder from its bottom
+ *  end (a whole number of holes, so a beam along the piston hits both). */
+export const pistonMount = (def) => (def.length >= 2 ? 2 : 1) * HOLE_SPACING;
 
 /** Parts the Wrench can wire controls to, and keys can run. */
 export const isActuator = (kind) => ['motor', 'piston', 'thruster', 'magnet', 'cannon', 'conveyor'].includes(kind);

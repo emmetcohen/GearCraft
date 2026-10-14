@@ -9,7 +9,7 @@
 // The same functions draw the gallery thumbnails and the world, so a part
 // always looks the same everywhere.
 // =============================================================================
-import { MODULE, OUTLINE, gearLayers, faceHoles } from '../parts/partDefs.js';
+import { MODULE, OUTLINE, gearLayers, faceHoles, pistonMount } from '../parts/partDefs.js';
 import { beamHoleOffsets } from '../parts/geometry.js';
 
 // ---------------------------------------------------------------- colours --
@@ -502,12 +502,15 @@ const painters = {
     ctx.fill();
     // Bands + the bottom pivot.
     ctx.fillStyle = shade(fill, -0.3);
-    for (const f of [0.15, 0.6]) ctx.fillRect(-L / 2 + L * f, -t / 2, 0.08, t);
-    circle(ctx, -L / 2, 0, 0.14);
-    ctx.fillStyle = '#ffe066';
-    ctx.fill();
-    outline(ctx, px, 2);
-    ctx.stroke();
+    ctx.fillRect(-L / 2 + L * 0.6, -t / 2, 0.08, t);
+    // Both base joints: the bottom end and the one up the cylinder.
+    for (const x of [-L / 2, -L / 2 + pistonMount(def)]) {
+      circle(ctx, x, 0, 0.14);
+      ctx.fillStyle = '#ffe066';
+      ctx.fill();
+      outline(ctx, px, 2);
+      ctx.stroke();
+    }
   },
 
   /** Piston rod: shiny shaft from the middle out to the top pivot. */

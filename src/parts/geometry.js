@@ -8,7 +8,7 @@
 // Nothing here touches the DOM or the physics engine, so it can be unit
 // tested in Node and reused by every mode.
 // =============================================================================
-import { getDef, partDef, gearLayers, faceHoles, HOLE_SPACING, MODULE, roleOf } from './partDefs.js';
+import { getDef, partDef, gearLayers, faceHoles, pistonMount, HOLE_SPACING, MODULE, roleOf } from './partDefs.js';
 
 /** Rotate a local point (lx, ly) by `angle` and move it to (x, y). */
 export function localToWorld(x, y, angle, lx, ly) {
@@ -74,11 +74,14 @@ export function socketsOf(part) {
   const role = roleOf(def.kind);
   if (role === 'object' || role === 'link' || role === 'control' || role === 'bolt' || role === 'gadget') return [];
   if (role === 'piston') {
-    // A pivot at each end: the bottom on the cylinder, the top on the rod.
+    // A pivot at each end (the bottom on the cylinder, the top on the rod),
+    // plus a second joint on the cylinder: pin both base joints to the same
+    // beam and the piston can't swing.
     const h = def.length / 2;
     return [
       { ...localToWorld(part.x, part.y, part.angle, -h, 0), index: 0, sub: 'main', pivot: true },
       { ...localToWorld(part.x, part.y, part.angle, h, 0), index: 1, sub: 'hub', pivot: true },
+      { ...localToWorld(part.x, part.y, part.angle, -h + pistonMount(def), 0), index: 2, sub: 'main', pivot: true },
     ];
   }
   if (role === 'beam') {

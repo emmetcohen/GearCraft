@@ -251,8 +251,9 @@ export function buildAssembly(parts) {
   const pendingPrismatics = [];
   for (const part of parts) {
     if (getDef(part.type).kind !== 'piston') continue;
-    const base = clusters.find((cl) => cl.pivots.some((pv) => pv.uid === part.uid && pv.sub === 'main'));
-    if (base && base.uids.length === 0 && base.pivots.length === 1) weld(WORLD, mainKey(part.uid));
+    // Free = neither base joint (bottom end, or the one up the cylinder) touches anything.
+    const bases = clusters.filter((cl) => cl.pivots.some((pv) => pv.uid === part.uid && pv.sub === 'main'));
+    if (bases.every((cl) => cl.uids.length === 0 && cl.pivots.length === 1)) weld(WORLD, mainKey(part.uid));
     pendingPrismatics.push([mainKey(part.uid), hubKey(part.uid), part.uid, true]);
   }
   for (const part of parts) {

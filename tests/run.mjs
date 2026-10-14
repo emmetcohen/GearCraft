@@ -809,5 +809,19 @@ test('wrench: a Key control can drive a piston too', () => {
   assert(sim.transformOf(pis.uid, 'hub').y > 2.8, 'W pushes it out');
 });
 
+
+test('piston: two base joints on one beam stop it swinging', () => {
+  // A beam bolted down (holes at x = -3.2 .. 0); the piston lies along it.
+  const angleAfter = (bottomX) => {
+    const b = emptyBuild();
+    addPart(b, 'beam', -1.6, 3, 0, { length: 3.2 }); addPart(b, 'pin-fixed', -3.2, 3);
+    const pis = addPart(b, 'piston', bottomX + 1.2, 3, 0, { length: 2.4, keyPlus: 'w' }); // second joint 0.8 up
+    const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1);
+    return sim.transformOf(pis.uid).angle;
+  };
+  near(angleAfter(-0.8), 0, 0.02, 'both joints on the beam: stays level');
+  assert(angleAfter(0) < -0.3, 'only the bottom joint on the beam: it swings down');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
