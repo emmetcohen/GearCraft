@@ -20,7 +20,8 @@ import { snapPart, snapEnd, snapDrawEnd, GRID } from './parts/snap.js';
 import { emptyBuild, cloneBuild, addPart, findPart, removePart } from './core/build.js';
 import { buildAssembly, mainKey, hubKey, WORLD } from './physics/assembly.js';
 import { solveGearTrain } from './physics/gearTrain.js';
-import { Simulation, DT, CRANK_TORQUE } from './physics/world.js';
+import { Simulation, DT, CRANK_TORQUE, motorKeys, keyControlKeys, isLegacyKey } from './physics/world.js';
+import { keyLabel } from './render/draw.js';
 import { Camera, Renderer } from './render/renderer.js';
 import { chainPath } from './render/draw.js';
 import { buildGallery } from './ui/gallery.js';
@@ -59,7 +60,7 @@ export class App {
     this.mode = mode;
     this.build = emptyBuild();
     this.settings = { ...mode.defaultSettings };
-    this.options = { loadView: false, grid: true, autoPin: true, joints: true };
+    this.options = { loadView: false, grid: true, autoPin: true, joints: true, follow: true };
     this.state = 'edit';        // 'edit' | 'playing' | 'paused'
     this.sim = null;            // Simulation while playing/paused
     this.preplay = null;        // copy of the build from before Play (for Reset)
@@ -78,6 +79,9 @@ export class App {
     this.keys = new Set();      // keys held while playing
     this.mouse = { x: 0, y: 0 };// last pointer position (world), for paste
     this.clipboard = null;      // copied parts
+    this.followUid = null;      // part the camera follows while playing
+    this.prePlayCamera = null;  // where the camera was when you pressed Play
+    this.followPopUid = null;   // part showing the "Follow this" button (playing)
     this.placedAt = new Map();  // uid -> time placed (for the squash animation)
     this.analysis = null;       // cached edit-mode assembly + gear train
     this.listeners = [];        // (event) => void, for modes/panels
@@ -93,6 +97,7 @@ export class App {
     this.toastEl = document.getElementById('toast');
     this.toolChipEl = document.getElementById('tool-chip');
     this.propsPopEl = document.getElementById('props-pop');
+    this.followPopEl = document.getElementById('follow-pop');
 
     this.gallery = buildGallery(document.getElementById('gallery'), {
       onDragStart: (type, e) => this._beginGalleryDrag(type, e),
@@ -131,6 +136,7 @@ export class App {
         if (steps === 12) acc = 0; // too slow: drop time rather than spiral
       }
       this._panWithKeys(dt);
+      this._followCamera(dt);
       this._render();
       requestAnimationFrame(frame);
     };
@@ -437,15 +443,29 @@ export class App {
     if (this.state === 'edit') {
       this.preplay = cloneBuild(this.build);
       this.sim = new Simulation(this.build, this.settings, this.mode.map);
+      this.prePlayCamera = { x: this.camera.x, y: this.camera.y, zoom: this.camera.zoom };
+      // Reset brings the camera back to the vehicle, even if you stop following it.
+      this.resetFocusUid = this.sim.autoFollowTarget();
+      this.followUid = this.options.follow ? this.resetFocusUid : null;
       for (const w of this.sim.assembly.warnings) this.toast(w);
-      if (this.sim.hasKeyMotors) this.toast('🎮 Hold ← / → to drive your motors', 3500);
-      else if (this.sim.signals.size) this.toast('🎛️ Click switches and buttons (or hold their keys) to run your motors', 3500);
+      const hints = new Set();
+      for (const p of this.sim.parts) {
+        const k = kindOf(p);
+        const pair = k === 'motor' ? motorKeys(p) : k === 'keyButton' && !isLegacyKey(p) ? keyControlKeys(p) : null;
+        if (pair) {
+          if (pair.cw !== 'none') hints.add(`${keyLabel(pair.cw)} ↻`);
+          if (pair.ccw !== 'none') hints.add(`${keyLabel(pair.ccw)} ↺`);
+        } else if (k === 'keyButton') hints.add(keyLabel(p.props.key));
+      }
+      if (hints.size) this.toast(`🎮 Keys: ${[...hints].join(' · ')}`, 3500);
+      else if (this.sim.signals.size) this.toast('🎛️ Click switches and hold buttons to run your motors', 3500);
       this._syncKeys();
     }
     this._cancelPlacement();
     this.hoverUid = null;
     this.state = 'playing';
     this.emit('state');
+    this._syncToolUI();
   }
 
   pause() {
@@ -464,8 +484,38 @@ export class App {
     this.state = 'edit';
     this.drag = null;
     this.showInfo = false;
+    // Camera back to where things started: on the part you were following
+    // (now back at its start), otherwise where the camera was before Play.
+    const cam = this.prePlayCamera;
+    const focus = this.followUid ?? this.resetFocusUid;
+    const followed = focus != null && findPart(this.build, focus);
+    if (cam) this.camera.zoom = cam.zoom;
+    if (followed) { this.camera.x = followed.x; this.camera.y = followed.y + 1; }
+    else if (cam) { this.camera.x = cam.x; this.camera.y = cam.y; }
+    this.followUid = null;
+    this.followPopUid = null;
     this.changed();
     this.emit('state');
+    this._syncToolUI();
+  }
+
+  /** Follow a part with the camera while playing (null = stop following). */
+  follow(uid) {
+    this.followUid = uid;
+    if (uid != null) this.resetFocusUid = uid;
+    this.followPopUid = null;
+    if (uid != null) this.toast(`🎥 Following ${getDef(findPart({ parts: this.sim?.parts ?? this.build.parts }, uid).type).name}`, 1400);
+    this._syncToolUI();
+  }
+
+  /** Glide the camera after the followed part. */
+  _followCamera(dt) {
+    if (!this.sim || this.followUid == null) return;
+    const t = this.sim.transformOf(this.followUid);
+    if (!t || !Number.isFinite(t.x)) return;
+    const k = Math.min(1, dt * 5);
+    this.camera.x += (t.x - this.camera.x) * k;
+    this.camera.y += (t.y + 1 - this.camera.y) * k;
   }
 
   setSetting(key, value) {
@@ -630,17 +680,7 @@ export class App {
     // never just because you placed or dragged something.
     const t = this.selectedUid != null ? this.transformOf(this.selectedUid) : null;
     if (t) {
-      let s = this.camera.worldToScreen(t.x, t.y);
-      // While running, gently keep the selected part in view (select your
-      // car's chassis and the camera follows it). Not while you're dragging.
-      if (this.state === 'playing' && !this.drag) {
-        const cam = this.camera, mx = cam.w * 0.25, my = cam.h * 0.25;
-        const dx = s.x < mx ? s.x - mx : s.x > cam.w - mx ? s.x - (cam.w - mx) : 0;
-        const dy = s.y < my ? s.y - my : s.y > cam.h - my ? s.y - (cam.h - my) : 0;
-        cam.x += (dx / cam.zoom) * 0.15;
-        cam.y -= (dy / cam.zoom) * 0.15;
-        s = cam.worldToScreen(t.x, t.y);
-      }
+      const s = this.camera.worldToScreen(t.x, t.y);
       const sel = (this.sim ? this.sim.parts : this.build.parts).find((p) => p.uid === this.selectedUid);
       const def = sel && partDef(sel);
       const r = def ? (def.drawn ? def.thickness : outerRadius(def)) * this.camera.zoom : 0;
@@ -650,6 +690,30 @@ export class App {
       showReadout(this.readoutEl, null);
     }
     this._placePropsPop();
+    this._placeFollowPop();
+  }
+
+  /** While playing: a "Follow this" button beside the part you clicked. */
+  _placeFollowPop() {
+    const el = this.followPopEl;
+    if (!el) return;
+    const uid = this.sim ? this.followPopUid : null;
+    const t = uid != null ? this.sim.transformOf(uid) : null;
+    if (!t) { el.hidden = true; return; }
+    const following = this.followUid === uid;
+    const label = following ? '✕ Stop following' : '🎥 Follow this';
+    if (el.dataset.label !== label) {
+      el.dataset.label = label;
+      el.innerHTML = `<button class="btn small">${label}</button>`;
+      el.querySelector('button').addEventListener('click', () => this.follow(following ? null : uid));
+    }
+    el.hidden = false;
+    const s = this.camera.worldToScreen(t.x, t.y);
+    const part = this.sim.parts.find((p) => p.uid === uid);
+    const def = part && partDef(part);
+    const r = def ? (def.drawn ? def.thickness : outerRadius(def)) * this.camera.zoom : 0;
+    el.style.left = `${Math.max(8, Math.min(this.camera.w - el.offsetWidth - 8, s.x - el.offsetWidth / 2))}px`;
+    el.style.top = `${Math.min(this.camera.h - 40, s.y + r + 12)}px`;
   }
 
   /** Handles for the Move tool (stretch ends) and Scale tool (resize). */
@@ -863,7 +927,10 @@ export class App {
       if (!d.moved && Math.hypot(e.clientX - (d.sx ?? e.clientX), e.clientY - (d.sy ?? e.clientY)) > 4) d.moved = true;
       switch (d.kind) {
         case 'pan':
-          if (d.moved) { d.cancel = false; d.clickUid = null; }
+          if (d.moved) {
+            d.cancel = false; d.clickUid = null;
+            if (this.sim && this.followUid != null) { this.followUid = null; this._syncToolUI(); }
+          }
           this.camera.x = d.cx - (e.clientX - d.sx) / this.camera.zoom;
           this.camera.y = d.cy + (e.clientY - d.sy) / this.camera.zoom;
           break;
@@ -890,10 +957,15 @@ export class App {
         case 'sim':
           this.sim?.release();
           if (d.button != null) this.sim?.setSignal(d.button, false);
+          if (!d.moved && d.clickUid != null) { this.followPopUid = d.clickUid; this.showInfo = true; }
           break;
         case 'pan':
           if (d.cancel) this._cancelAll();
-          else if (d.clickUid != null) this.showInfo = true; // a click on a part while running
+          else if (d.play) {
+            // A click while running: show the part's numbers and a Follow button.
+            this.followPopUid = d.clickUid;
+            if (d.clickUid != null) this.showInfo = true;
+          }
           break;
         case 'move':
           if (d.moved) {
@@ -961,11 +1033,12 @@ export class App {
       return;
     }
     if (this.state === 'playing' && this.sim.grabBodyAt(w)) {
-      this.drag = { kind: 'sim' };
+      // Grabbing a moving part; letting go without dragging counts as a click.
+      this.drag = { kind: 'sim', sx: e.clientX, sy: e.clientY, clickUid: hit?.uid ?? null };
       return;
     }
     if (!hit) this.select(null);
-    this.drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, cx: this.camera.x, cy: this.camera.y, clickUid: hit?.uid ?? null };
+    this.drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, cx: this.camera.x, cy: this.camera.y, clickUid: hit?.uid ?? null, play: true };
   }
 
   /** Pointer pressed in edit mode with a toolbar tool (not placing). */
@@ -1345,6 +1418,15 @@ export class App {
     for (const [id, el] of this.toolButtons || []) el.classList.toggle('on', id === this.tool && !this.armedType);
     const chip = this.toolChipEl;
     if (!chip) return;
+    if (!this.editable) {
+      // While playing the chip shows what the camera is following.
+      const part = this.followUid != null && this.sim?.parts.find((p) => p.uid === this.followUid);
+      if (!part) { chip.hidden = true; return; }
+      chip.innerHTML = `<b>🎥 Following ${getDef(part.type).name}</b><span>click a part to follow it instead</span><button class="chip-x" title="Stop following">Stop ✕</button>`;
+      chip.querySelector('button').addEventListener('click', () => this.follow(null));
+      chip.hidden = false;
+      return;
+    }
     const type = this.armedType;
     let title = null, how = '';
     if (type) {
@@ -1385,22 +1467,22 @@ export class App {
   // =================================================================== keys ==
   /** Arrow keys / key controls while playing. */
   _syncKeys() {
-    if (!this.sim) return;
-    const v = (this.keys.has('arrowright') ? 1 : 0) - (this.keys.has('arrowleft') ? 1 : 0);
-    this.sim.setThrottle(v);
-    for (const p of this.sim.parts) {
-      if (kindOf(p) === 'keyButton') this.sim.setSignal(p.uid, this.keys.has(p.props.key ?? 'w'));
-    }
+    if (this.sim) this.sim.setKeys(this.keys);
   }
 
   /** Edit mode: arrow keys pan the view. */
   _panWithKeys(dt) {
-    if (this.sim || !this.keys.size) return;
+    if (!this.keys.size) return;
+    // While playing, arrows the machine uses drive it instead.
+    const bound = this.sim ? this.sim.boundKeys : new Set();
+    const held = (k) => this.keys.has(k) && !bound.has(k);
+    if (!['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].some(held)) return;
+    if (this.followUid != null) { this.followUid = null; this._syncToolUI(); }
     const sp = (600 / this.camera.zoom) * dt;
-    if (this.keys.has('arrowleft')) this.camera.x -= sp;
-    if (this.keys.has('arrowright')) this.camera.x += sp;
-    if (this.keys.has('arrowup')) this.camera.y += sp;
-    if (this.keys.has('arrowdown')) this.camera.y -= sp;
+    if (held('arrowleft')) this.camera.x -= sp;
+    if (held('arrowright')) this.camera.x += sp;
+    if (held('arrowup')) this.camera.y += sp;
+    if (held('arrowdown')) this.camera.y -= sp;
   }
 
   _bindKeys() {
@@ -1413,15 +1495,12 @@ export class App {
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
       // While playing, keys bound to Key controls (and the arrows) drive the machine.
-      if (this.sim && !mod) {
-        const bound = k.startsWith('arrow') || this.sim.keyControls(k).length;
-        if (bound) {
-          e.preventDefault();
-          if (!e.repeat) { this.keys.add(k); this._syncKeys(); }
-          return;
-        }
+      if (this.sim && !mod && this.sim.boundKeys.has(k)) {
+        e.preventDefault();
+        if (!e.repeat) { this.keys.add(k); this._syncKeys(); }
+        return;
       }
-      if (!this.sim && !mod && k.startsWith('arrow')) { e.preventDefault(); this.keys.add(k); return; }
+      if (!mod && k.startsWith('arrow')) { e.preventDefault(); this.keys.add(k); return; }
       if (mod && k === 'z') {
         e.preventDefault();
         if (e.shiftKey) this.redo(); else this.undo();

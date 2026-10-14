@@ -23,21 +23,37 @@ const PROPS = [
     title: 'Bolted to the background: it stays exactly where it is.',
     has: (def) => !['link', 'control'].includes(roleOf(def.kind)) && !isMap(def) && def.kind !== 'fixedPin' && def.kind !== 'rotPin' },
   { key: 'reverse', label: 'Reverse direction', type: 'toggle', default: false, has: (def) => def.kind === 'motor' },
-  { key: 'keys', label: '🎮 Drive with ← / → keys', type: 'toggle', default: false,
-    title: 'Only turns while you hold an arrow key.', has: (def) => def.kind === 'motor' },
+  { key: 'keyCW', label: '⌨️ ↻ Clockwise key', type: 'select', default: 'none', options: keyOptions(true),
+    title: 'Hold this key to turn the motor clockwise (rolls a car to the RIGHT). With keys set, it only runs while you hold one.',
+    value: (p) => p.props.keyCW ?? (p.props.keys ? 'arrowright' : 'none'),
+    has: (def) => def.kind === 'motor' },
+  { key: 'keyCCW', label: '⌨️ ↺ Counter-clockwise key', type: 'select', default: 'none', options: keyOptions(true),
+    title: 'Hold this key to turn the motor counter-clockwise (rolls a car to the LEFT).',
+    value: (p) => p.props.keyCCW ?? (p.props.keys ? 'arrowleft' : 'none'),
+    has: (def) => def.kind === 'motor' },
   { key: 'idle', label: 'When not powered', type: 'choice', default: 'brake',
     options: [['brake', 'Brake'], ['free', 'Spin free']],
-    title: 'For motors run by arrow keys or wired controls: what happens when nothing is pressed.',
+    title: 'For motors run by keys or wired controls: what happens when nothing is pressed.',
     has: (def) => def.kind === 'motor' },
   { key: 'stiffness', label: 'Stiffness', type: 'choice', default: 'medium',
     options: [['soft', 'Soft'], ['medium', 'Medium'], ['stiff', 'Stiff']], has: (def) => def.kind === 'spring' },
   { key: 'on', label: 'Starts on', type: 'toggle', default: false, has: (def) => def.kind === 'switch' },
-  { key: 'key', label: 'Key', type: 'select', default: 'w',
-    options: KEY_CHOICES.map((k) => [k, keyLabel(k)]), has: (def) => def.kind === 'keyButton' },
+  { key: 'keyCW', label: '↻ Clockwise key', type: 'select', default: 'd', options: keyOptions(true),
+    title: 'Hold it to turn wired motors clockwise (rolls a car to the RIGHT).',
+    value: (p) => p.props.keyCW ?? (p.props.key != null && p.props.keyCCW == null ? 'none' : 'd'),
+    has: (def) => def.kind === 'keyButton' },
+  { key: 'keyCCW', label: '↺ Counter-clockwise key', type: 'select', default: 'a', options: keyOptions(true),
+    title: 'Hold it to turn wired motors counter-clockwise (rolls a car to the LEFT).',
+    value: (p) => p.props.keyCCW ?? (p.props.key != null && p.props.keyCW == null ? p.props.key : 'a'),
+    has: (def) => def.kind === 'keyButton' },
   { key: 'reverse', label: 'Makes motors go', type: 'choice', default: false,
     options: [[false, 'Forward'], [true, 'Reverse']],
-    has: (def) => roleOf(def.kind) === 'control' },
+    has: (def) => def.kind === 'switch' || def.kind === 'button' },
 ];
+
+function keyOptions(withNone) {
+  return [...(withNone ? [['none', '— none —']] : []), ...KEY_CHOICES.map((k) => [k, keyLabel(k)])];
+}
 
 const isMap = (def) => def.kind === 'ramp' || def.kind === 'block' || def.kind === 'track';
 
@@ -85,7 +101,7 @@ export function renderProps(root, app, parts, opts = {}) {
   for (const prop of PROPS) {
     const owners = parts.filter((p, i) => prop.has(defs[i]));
     if (!owners.length) continue;
-    const values = owners.map((p) => p.props[prop.key] ?? prop.default);
+    const values = owners.map((p) => (prop.value ? prop.value(p) : p.props[prop.key] ?? prop.default));
     const same = values.every((v) => v === values[0]);
     const value = same ? values[0] : undefined;
     const set = (v) => app.setProps(owners.map((p) => p.uid), prop.key, v);

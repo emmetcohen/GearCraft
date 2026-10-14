@@ -543,5 +543,43 @@ test('controls ride on the part under them', () => {
   assert(sim.transformOf(sw.uid).y < 1, 'switch fell with the beam');
 });
 
+
+console.log('\nTwo-key control + camera follow');
+
+test('motor keys: D turns it clockwise (car goes right), A counter-clockwise (left)', () => {
+  const { b, chassis } = carBuild();
+  Object.assign(b.parts.find((p) => p.type === 'motor').props, { keyCW: 'd', keyCCW: 'a' });
+  const sim = new Simulation(b, SETTINGS, MAP);
+  assert(sim.boundKeys.has('d') && sim.boundKeys.has('a'), 'both keys bound');
+  run(sim, 0.5);
+  near(sim.transformOf(chassis.uid).x, 0, 0.2, 'parked with no keys');
+  sim.setKeys(['d']); run(sim, 2);
+  const x1 = sim.transformOf(chassis.uid).x;
+  assert(x1 > 1.5, `D drives right, x = ${x1.toFixed(2)}`);
+  sim.setKeys(['a']); run(sim, 3);
+  assert(sim.transformOf(chassis.uid).x < x1 - 1, 'A drives back left');
+});
+
+test('Key control: one Key wired to a motor gives both directions', () => {
+  const { b, g, ctl } = wiredBuild('key-button', { keyCW: 'e', keyCCW: 'q' });
+  const sim = new Simulation(b, SETTINGS, MAP);
+  sim.setKeys(['q']); run(sim, 1);
+  near(sim.readout(g.uid).rpm, 30, 0.5, 'Q: counter-clockwise');
+  sim.setKeys(['e']); run(sim, 1);
+  near(sim.readout(g.uid).rpm, -30, 0.5, 'E: clockwise');
+  sim.setKeys([]); run(sim, 1);
+  near(sim.readout(g.uid).rpm, 0, 0.5, 'neither: brakes');
+  assert(sim.keyControls('q').includes(ctl.uid), 'keyControls finds it');
+});
+
+test('follow: the camera picks the car chassis, not a gear spinning on a pin', () => {
+  const { b, chassis } = carBuild();
+  addPart(b, 'motor', 10, 6); addPart(b, 'gear-24', 10, 6);   // a big static machine elsewhere
+  const sim = new Simulation(b, SETTINGS, MAP);
+  assert(sim.autoFollowTarget() === chassis.uid, `picked ${sim.autoFollowTarget()}`);
+  const s2 = new Simulation(sliceBuild().b, SETTINGS, MAP);
+  assert(s2.autoFollowTarget() === null, 'nothing free-moving: no follow');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

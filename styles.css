@@ -267,3 +267,8 @@ dialog input[type=text] { font: inherit; padding: 6px 10px; border: 3px solid va
 .props-pop .choice .seg, #sel-section .choice .seg { width: 100%; }
 .props-pop .choice .seg-btn, #sel-section .choice .seg-btn { flex: 1; }
 .dock-btn .dock-ico { font-size: 24px; height: 26px; display: grid; place-items: center; }
+
+/* While playing: "Follow this" under the part you clicked. */
+.follow-pop { position: absolute; z-index: 3; animation: fade 0.12s ease-out; }
+.follow-pop[hidden] { display: none; }
+.follow-pop .btn { background: #ffd23f; }

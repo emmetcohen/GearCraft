@@ -59,7 +59,7 @@ the world, and it works on whatever you've selected.
 | ⟳ **Rotate** | **2** | Drag the blue ring (or a selected part) to turn the selection in 15° steps (**Alt** = any angle). **Q** / **E** also rotate. |
 | ⤢ **Scale** | **3** | Click a part and drag its blue handle: gears get more teeth, wheels and balls get bigger, crates/blocks/ramps get wider or taller. |
 | 🔧 **Wrench** | **4** | Wire a **Switch**, **Button** or **Key** to a motor: click one, then the other. Click the same pair again to cut the wire. |
-| 🪛 **Screwdriver** | **5** | Click parts (Shift / box for several) to set **Collisions** (normal / everything / none), **Anchored**, and each part's own settings (motor direction, spring stiffness, which key a Key listens to...). |
+| 🪛 **Screwdriver** | **5** | Click parts (Shift / box for several) to set **Collisions** (normal / everything / none), **Anchored**, and each part's own settings (motor direction and keys, spring stiffness, a Key control's two keys...). |
 | 🔨 **Delete** | **6** | Click a part to remove it, or drag a box to remove everything inside. |
 
 | Do this | How |
@@ -79,7 +79,9 @@ the world, and it works on whatever you've selected.
 | Pan / zoom | Right- or middle-drag, or the arrow keys · mouse wheel zooms · **Home** recentres |
 | Load view | Toggle in the right panel, or **L** |
 | Save / load / share | 💾 Save / Load (**Ctrl/⌘+S**): named slots, examples, export/import `.json` |
-| While running | Click **switches**, hold **buttons** or their **keys**. Arrow keys drive motors set to "Drive with ← / →". Drag a **hand crank's** handle in circles. Grab loose objects to fling them. Select a part and the camera follows it. |
+| Drive with keys | Screwdriver on a motor: pick a **↻ clockwise key** and a **↺ counter-clockwise key** (clockwise rolls a car right). Or wire a **Key** control (A ↺ / D ↻ by default) to several motors |
+| Camera | While playing it **follows your vehicle** (turn off in the right panel, or press **Stop** on the chip). Click any part and press **🎥 Follow this** to follow it instead. Panning stops following. **Reset** brings the camera back to where the vehicle started |
+| While running | Click **switches**, hold **buttons**, hold your keys. Drag a **hand crank's** handle in circles. Grab loose objects to fling them. |
 
 ### Building rules (how parts join)
 

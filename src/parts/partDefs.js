@@ -108,7 +108,7 @@ export const PARTS = [
   // maxTorque/rpm are the sandbox slider defaults.
   { id: 'motor', name: 'Motor', category: 'movers', kind: 'motor', size: 'M',
     housing: 1.2, mass: 2.0, maxTorque: 60, rpm: 30, shape: 'motor', color: '#ef476f',
-    tip: 'Drives whatever sits on its shaft. On a beam it rides along; otherwise it\'s bolted to the background. Set it to "arrow keys" to drive it yourself.' },
+    tip: 'Drives whatever sits on its shaft. On a beam it rides along; otherwise it\'s bolted to the background. Give it keys with the Screwdriver to drive it yourself.' },
   { id: 'crank', name: 'Hand Crank', category: 'movers', kind: 'crank', size: 'M',
     armLength: 1.0, mass: 0.5, shape: 'crank', color: '#ff70a6',
     tip: 'Human power! While playing, drag the handle around to turn it.' },
@@ -155,7 +155,7 @@ export const PARTS = [
     tip: 'Wired motors run while you hold it down (while playing). Wire it with the Wrench.' },
   { id: 'key-button', name: 'Key', category: 'controls', kind: 'keyButton', size: 'S',
     radius: 0.4, mass: 0.1, shape: 'keyButton', color: '#e9ecef',
-    tip: 'Wired motors run while you hold its key. Pick the key with the Screwdriver. Wire it with the Wrench.' },
+    tip: 'Two keys: D turns wired motors clockwise (a car goes right), A the other way. Change the keys with the Screwdriver. Wire it with the Wrench.' },
   // The wire itself is made by the Wrench tool (not from the gallery).
   { id: 'wire', name: 'Wire', category: 'controls', kind: 'wire', hidden: true, mass: 0, shape: 'wire', color: '#ffd23f' },
 

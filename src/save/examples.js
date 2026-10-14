@@ -38,7 +38,7 @@ export const EXAMPLES = [
   },
   {
     name: 'Little car',
-    blurb: 'A motor riding on a beam drives the back wheel. Watch it climb the ramp. (Click the motor and tick "Drive with ← / →" to steer it yourself.)',
+    blurb: 'A motor riding on a beam drives the back wheel. Watch it climb the ramp. (Use the Screwdriver on the motor to give it keys and drive it yourself.)',
     camera: { x: 6, y: 4, zoom: 26 },
     build: () => make([
       ['beam', 0, 1.6, 0, { length: 6.4 }],

@@ -72,6 +72,11 @@ export const sandboxMode = {
     view.insertAdjacentHTML('beforeend',
       '<p style="margin:-2px 0 6px 26px;font-size:11.5px">Green = easy · Yellow = working · Red = near stall. Shows while running.</p>');
     panel.toggle(view, {
+      label: '🎥 Camera follows while playing', checked: app.options.follow,
+      title: 'When you press Play, the camera follows your vehicle. Click any part while playing to follow it instead.',
+      onChange: (v) => { app.options.follow = v; if (!v && app.sim) app.follow(null); },
+    });
+    panel.toggle(view, {
       label: 'Snap to grid', checked: app.options.grid,
       onChange: (v) => { app.options.grid = v; },
     });
@@ -102,7 +107,8 @@ export const sandboxMode = {
       <li><b>Screwdriver:</b> collisions (normal / everything / none), anchored, and each part's own settings.</li>
       <li><b>Chain:</b> click one sprocket, then another. <b>Train:</b> draw a beam between two drive wheels' yellow <b>crank pins</b>.</li>
       <li><kbd>Q</kbd>/<kbd>E</kbd> rotate · <kbd>Del</kbd> delete · <kbd>Ctrl/⌘+C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl/⌘+D</kbd> duplicate · <kbd>Space</kbd> play</li>
-      <li><b>View:</b> right-drag or arrow keys to pan, scroll to zoom.</li>
+      <li><b>View:</b> right-drag or arrow keys to pan, scroll to zoom. While playing the camera follows your vehicle; click any part and press <b>🎥 Follow this</b> to follow something else.</li>
+      <li><b>Drive with keys:</b> use the Screwdriver on a motor and pick a ↻ clockwise key and a ↺ counter-clockwise key (clockwise rolls a car right). Or wire a <b>Key</b> control (A / D by default) to several motors.</li>
     </ul>`);
   },
 

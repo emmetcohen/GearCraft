@@ -54,6 +54,22 @@ const JAM_TORQUE = 1e6;
 /** Spring stiffness presets (oscillation frequency in Hz: higher = stiffer). */
 export const SPRING_HZ = { soft: 1.8, medium: 3.5, stiff: 7 };
 
+/** A motor's own keys: { cw, ccw } or null. (Old saves: keys:true = the arrows.) */
+export function motorKeys(part) {
+  const p = part.props;
+  const cw = p.keyCW ?? (p.keys ? 'arrowright' : 'none');
+  const ccw = p.keyCCW ?? (p.keys ? 'arrowleft' : 'none');
+  return cw === 'none' && ccw === 'none' ? null : { cw, ccw };
+}
+
+/** A Key control's two keys. Defaults: D turns ↻ (car goes right), A turns ↺. */
+export function keyControlKeys(part) {
+  return { cw: part.props.keyCW ?? 'd', ccw: part.props.keyCCW ?? 'a' };
+}
+
+/** Old saves: a Key control with one `key` that turned motors "on". */
+export const isLegacyKey = (part) => part.props.key != null && part.props.keyCW == null && part.props.keyCCW == null;
+
 export class Simulation {
   /**
    * @param build    the build (plain data, not modified)
@@ -77,8 +93,8 @@ export class Simulation {
     this.telemetry = new Map();   // driver uid -> { torque, maxTorque, speed, load, stalled }
     this.fixtures = [];           // [{ fixture, baseFriction }]
     this.links = new Map();       // spring/rope uid -> { bodyA, la, bodyB, lb, joint }
-    this.throttle = 0;            // -1..1 from the arrow keys, for key-driven motors
-    this.signals = new Map();     // control uid -> on? (switches, buttons, keys)
+    this.held = new Set();        // keyboard keys held down (lower-case names)
+    this.signals = new Map();     // control uid -> on (switch/button: bool; key: -1/0/+1)
     this.wires = new Map();       // motor uid -> [control uids wired to it]
 
     this._createBodies(map);
@@ -302,7 +318,8 @@ export class Simulation {
     for (const part of this.parts) {
       const kind = getDef(part.type).kind;
       if (kind === 'switch') this.signals.set(part.uid, !!part.props.on);
-      if (kind === 'button' || kind === 'keyButton') this.signals.set(part.uid, false);
+      if (kind === 'button') this.signals.set(part.uid, false);
+      if (kind === 'keyButton') this.signals.set(part.uid, 0);
       if (kind !== 'wire') continue;
       const a = this.byUid.get(part.props.a), b = this.byUid.get(part.props.b);
       if (!a || !b) continue;
@@ -313,23 +330,62 @@ export class Simulation {
     }
   }
 
-  /** Turn a control on/off (click a switch, hold a button or key). */
+  /** Turn a control on/off (click a switch, hold a button). */
   setSignal(uid, on) {
     if (this.signals.get(uid) === on) return;
     this.signals.set(uid, on);
     for (const [motorUid, ctls] of this.wires) {
-      if (!ctls.includes(uid)) continue;
-      const d = this.driverJoints.get(motorUid);
-      if (d && !this.jammedBodies.has(d.bodyId)) { this._driveMotor(d); d.joint.getBodyB().setAwake(true); }
+      if (ctls.includes(uid)) this._redrive(motorUid);
     }
+  }
+
+  _redrive(motorUid) {
+    const d = this.driverJoints.get(motorUid);
+    if (d && !this.jammedBodies.has(d.bodyId)) { this._driveMotor(d); d.joint.getBodyB().setAwake(true); }
   }
 
   /** Flip a switch. */
   toggleSwitch(uid) { this.setSignal(uid, !this.signals.get(uid)); }
 
+  /** Keys held right now (a Set of lower-case key names). Drives Key
+   *  controls and motors with their own keys. */
+  setKeys(held) {
+    this.held = new Set(held);
+    for (const p of this.parts) {
+      if (getDef(p.type).kind === 'keyButton') this.signals.set(p.uid, this._keySignal(p));
+    }
+    for (const d of this.driverJoints.values()) {
+      if (d.kind === 'motor' && (motorKeys(d.part) || this.wires.has(d.part.uid))) this._redrive(d.part.uid);
+    }
+  }
+
+  /** A Key control's output: +1 counter-clockwise, -1 clockwise, 0 neither.
+   *  (Old saves had one `key` that just turned it "on".) */
+  _keySignal(p) {
+    if (isLegacyKey(p)) return this.held.has(p.props.key) ? 1 : 0;
+    const k = keyControlKeys(p);
+    return (this.held.has(k.ccw) ? 1 : 0) - (this.held.has(k.cw) ? 1 : 0);
+  }
+
+  /** Every key that does something in this machine. */
+  get boundKeys() {
+    const out = new Set();
+    for (const p of this.parts) {
+      const kind = getDef(p.type).kind;
+      if (kind === 'keyButton') {
+        if (isLegacyKey(p)) out.add(p.props.key);
+        else { const k = keyControlKeys(p); out.add(k.cw); out.add(k.ccw); }
+      }
+      if (kind === 'motor') { const k = motorKeys(p); if (k) { out.add(k.cw); out.add(k.ccw); } }
+    }
+    out.delete('none');
+    return out;
+  }
+
   /** Key controls bound to this key (lower-case key name). */
   keyControls(key) {
-    return this.parts.filter((p) => getDef(p.type).kind === 'keyButton' && (p.props.key ?? 'w') === key).map((p) => p.uid);
+    return this.parts.filter((p) => getDef(p.type).kind === 'keyButton' &&
+      (isLegacyKey(p) ? p.props.key === key : Object.values(keyControlKeys(p)).includes(key))).map((p) => p.uid);
   }
 
   /** Current world positions of a spring's or rope's two ends. */
@@ -395,39 +451,71 @@ export class Simulation {
   }
 
   _driveMotor(d) {
-    const dir = d.part.props.reverse ? -1 : 1;
-    // A motor with wires or arrow-key control only runs when told to:
-    //   arrow keys: → turns clockwise (rolls a car right), ← back
-    //   wired controls: each one that's on adds +1 (or -1 if set to Reverse)
+    const p = d.part.props;
+    const dir = p.reverse ? -1 : 1;
+    // spin: +1 = counter-clockwise (the physics' positive direction).
+    // A motor with its own keys or wired controls only runs when told to:
+    //   its keys: ↻ key turns it clockwise (rolls a car right), ↺ key the other way
+    //   switches/buttons: on = its normal direction (or backwards if set to Reverse)
+    //   Key controls: their ↻ / ↺ keys, like the motor's own keys
     // With nothing pressed it brakes (or spins freely if its idle mode is 'free').
+    const keys = motorKeys(d.part);
     const ctls = this.wires.get(d.part.uid);
-    let amount = 1;
-    if (d.part.props.keys || ctls) {
-      amount = d.part.props.keys ? -this.throttle : 0;
+    let spin = dir;
+    if (keys || ctls) {
+      spin = keys ? (this.held.has(keys.ccw) ? 1 : 0) - (this.held.has(keys.cw) ? 1 : 0) : 0;
       for (const uid of ctls || []) {
-        if (this.signals.get(uid)) amount += this.byUid.get(uid).props.reverse ? -1 : 1;
+        const ctl = this.byUid.get(uid);
+        const v = this.signals.get(uid);
+        if (getDef(ctl.type).kind === 'keyButton' && !isLegacyKey(ctl)) spin += v;
+        else if (v) spin += (ctl.props.reverse ? -1 : 1) * dir * Number(v);
       }
-      amount = Math.max(-1, Math.min(1, amount));
+      spin = Math.max(-1, Math.min(1, spin));
     }
-    const idleFree = amount === 0 && d.part.props.idle === 'free';
-    d.joint.setMotorSpeed(dir * amount * rpmToRad(this.settings.motorRpm));
+    const idleFree = spin === 0 && p.idle === 'free';
+    d.joint.setMotorSpeed(spin * rpmToRad(this.settings.motorRpm));
     d.joint.setMaxMotorTorque(idleFree ? AXLE_FRICTION * this.settings.friction : this.settings.motorTorque);
   }
 
-  /** Arrow-key input for key-driven motors: -1 (←), 0 or 1 (→). */
+  /** Old API: arrow keys as a number, -1 (←), 0 or 1 (→). */
   setThrottle(v) {
-    if (v === this.throttle) return;
-    this.throttle = v;
-    for (const d of this.driverJoints.values()) {
-      if (d.kind !== 'motor' || !d.part.props.keys || this.jammedBodies.has(d.bodyId)) continue;
-      this._driveMotor(d);
-      d.joint.getBodyB().setAwake(true);
-    }
+    const held = new Set([...this.held].filter((k) => k !== 'arrowleft' && k !== 'arrowright'));
+    if (v > 0) held.add('arrowright');
+    if (v < 0) held.add('arrowleft');
+    this.setKeys(held);
   }
 
-  /** Does this machine have any arrow-key motors? */
-  get hasKeyMotors() {
-    return [...this.driverJoints.values()].some((d) => d.kind === 'motor' && d.part.props.keys);
+  /** Does this machine have any key-driven motors or Key controls? */
+  get hasKeyMotors() { return this.boundKeys.size > 0; }
+
+  /**
+   * What the camera should follow by default: the "vehicle". That's a body
+   * that moves freely (not pinned or spinning on the background), preferably
+   * one carrying a motor; the heaviest wins. Returns a part uid or null.
+   */
+  autoFollowTarget() {
+    const pinned = new Set();
+    for (const r of this.assembly.revolutes) {
+      if (r.a === WORLD) pinned.add(r.b);
+      if (r.b === WORLD) pinned.add(r.a);
+    }
+    for (const pr of this.assembly.prismatics) if (pr.a === WORLD) pinned.add(pr.b);
+    let best = null;
+    for (const ab of this.assembly.bodies) {
+      if (ab.isStatic || pinned.has(ab.id)) continue;
+      const parts = ab.keys.map((k) => this.byUid.get(this.assembly.elements.get(k).uid));
+      const machine = parts.filter((q) => roleOf(getDef(q.type).kind) !== 'object');
+      if (!machine.length) continue;
+      const hasMotor = parts.some((q) => getDef(q.type).kind === 'motor');
+      const mass = this.bodies.get(ab.id)?.getMass() ?? 0;
+      const score = (hasMotor ? 1e6 : 0) + mass;
+      if (!best || score > best.score) {
+        const beams = machine.filter((q) => roleOf(getDef(q.type).kind) === 'beam');
+        const rep = beams.sort((a, b) => partDef(b).length - partDef(a).length)[0] || machine[0];
+        best = { score, uid: rep.uid };
+      }
+    }
+    return best?.uid ?? null;
   }
 
   // ---------------------------------------------------------------- input --

@@ -446,11 +446,15 @@ const painters = {
     roundRect(ctx, -0.3, -0.24, 0.6, 0.6, 0.1);
     ctx.fillStyle = shade(opts.on ? '#ffd23f' : fill, 0.4);
     ctx.fill();
-    const label = keyLabel(opts.props?.key ?? 'w');
+    const pr = opts.props ?? {};
+    const legacy = pr.key != null && pr.keyCW == null && pr.keyCCW == null;
+    const ccw = pr.keyCCW ?? 'a', cw = pr.keyCW ?? 'd';
+    const label = legacy ? keyLabel(pr.key)
+      : [ccw, cw].filter((k) => k !== 'none').map(keyLabel).join(' ');
     ctx.save();
     ctx.scale(1, -1); // text upright (world y is up)
     ctx.fillStyle = OUTLINE;
-    ctx.font = `700 ${label.length > 1 ? 0.3 : 0.42}px Fredoka, system-ui, sans-serif`;
+    ctx.font = `700 ${label.length > 2 ? 0.24 : label.length > 1 ? 0.3 : 0.42}px Fredoka, system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(label, 0, -0.05);
