@@ -296,10 +296,80 @@ const painters = {
       circle(ctx, bx * s * 0.36, by * s * 0.36, 0.06);
       ctx.fill();
     }
+    // Variants get a badge: ⚡ turbo, ×3 strong, a dial for a servo.
+    const badge = def.servo ? '◔' : def.rpmMul > 1 ? '⚡' : def.torqueMul > 1 ? `×${def.torqueMul}` : null;
+    if (badge) {
+      ctx.save();
+      ctx.scale(1, -1);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `700 ${s * 0.26}px Fredoka, system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(badge, 0, s * 0.33);
+      ctx.restore();
+    }
   },
 
-  /** The spinning shaft of a motor (drawn with the hub's own transform). */
+  /** A heavy steel disc with spokes and a weight rim. */
+  flywheel(ctx, def, px, fill) {
+    const r = def.radius;
+    circle(ctx, 0, 0, r);
+    ctx.fillStyle = shade(fill, -0.15);
+    ctx.fill();
+    outline(ctx, px);
+    ctx.stroke();
+    circle(ctx, 0, 0, r * 0.78);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = shade(fill, -0.35);
+    ctx.lineWidth = r * 0.14;
+    for (let i = 0; i < 4; i++) {
+      const a = (i * Math.PI) / 2 + Math.PI / 4;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(a) * r * 0.7, Math.sin(a) * r * 0.7); ctx.stroke();
+    }
+    // A stripe so you can see it spin.
+    ctx.fillStyle = '#ffd23f';
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.97, -0.25, 0.25); ctx.arc(0, 0, r * 0.8, 0.25, -0.25, true); ctx.closePath(); ctx.fill();
+    circle(ctx, 0, 0, r * 0.22);
+    ctx.fillStyle = '#adb5bd';
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+    axleHole(ctx, px);
+  },
+
+  /** A toothed bar: teeth on top (local +y), spaced like gear teeth. */
+  rack(ctx, def, px, fill) {
+    const L = def.length, pitch = Math.PI * MODULE;
+    ctx.beginPath();
+    ctx.moveTo(-L / 2, -0.25);
+    ctx.lineTo(L / 2, -0.25);
+    ctx.lineTo(L / 2, 0.05);
+    for (let x = L / 2 - pitch / 2; x > -L / 2 + 0.05; x -= pitch) {
+      ctx.lineTo(x + 0.15, 0.05); ctx.lineTo(x + 0.07, 0.27); ctx.lineTo(x - 0.07, 0.27); ctx.lineTo(x - 0.15, 0.05);
+    }
+    ctx.lineTo(-L / 2, 0.05);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px);
+    ctx.stroke();
+    roundRect(ctx, -L / 2 + 0.08, -0.17, L - 0.16, 0.08, 0.04);
+    ctx.fillStyle = shade(fill, 0.35);
+    ctx.fill();
+  },
+
+  /** The spinning shaft of a motor (drawn with the hub's own transform).
+   *  A servo has a horn (an arm) so you can see its angle. */
   motorHub(ctx, def, px) {
+    if (def.servo) {
+      roundRect(ctx, -0.12, -0.12, 0.6, 0.24, 0.12);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      outline(ctx, px, 2.5);
+      ctx.stroke();
+    }
     circle(ctx, 0, 0, 0.3);
     ctx.fillStyle = '#d8d2e6';
     ctx.fill();

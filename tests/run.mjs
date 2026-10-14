@@ -10,6 +10,8 @@ import { findMeshes } from '../src/physics/gearTrain.js';
 import { snapPart, snapDrawEnd } from '../src/parts/snap.js';
 import { socketsOf } from '../src/parts/geometry.js';
 import { partDef, faceHoles } from '../src/parts/partDefs.js';
+import { heightAt, TERRAINS } from '../src/physics/terrain.js';
+import { sanitizeBuild } from '../src/core/build.js';
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -1045,6 +1047,162 @@ test('snap: gadgets stick onto parts', () => {
   near(far.y, 0.5, 1e-6, 'far away: stays where dropped');
   const latch = snapPart([...b.parts, { uid: 99, type: 'crate', x: 1.2, y: 3, angle: 0, props: {} }], 'latch', 1.25, 3.05, 0);
   assert(/^holds (Beam|Crate) \+ (Beam|Crate)$/.test(latch.hint), `latch says what it holds (${latch.hint})`);
+});
+
+console.log('\nTerrain, smooth drawing, racks, motor variants, servo, flywheel');
+
+test('terrain: every terrain is flat in the middle', () => {
+  for (const t of TERRAINS) for (let x = -10; x <= 10; x += 0.5) near(heightAt(t.id, x), 0, 1e-9, `${t.id} at ${x}`);
+});
+
+test('terrain: a car drives far over bumps, and the ground keeps being built ahead', () => {
+  const { b, chassis } = carBuild();
+  b.terrain = 'bumpy';
+  const sim = new Simulation(b, { ...SETTINGS, motorRpm: 120 }, { groundHalfWidth: Infinity });
+  const chunks0 = sim.chunks.size;
+  let lowest = Infinity;
+  for (let t = 0; t < 15; t += DT) {
+    sim.step();
+    const c = sim.transformOf(chassis.uid);
+    lowest = Math.min(lowest, c.y - heightAt('bumpy', c.x));
+  }
+  const c = sim.transformOf(chassis.uid);
+  assert(c.x < -40, `drove a long way, bouncing over the bumps (x = ${c.x.toFixed(1)})`);
+  assert(sim.chunks.size > chunks0, 'more ground was built as it went');
+  assert(lowest > 0.3, `never sank into the ground (lowest ${lowest.toFixed(2)} above it)`);
+});
+
+test('terrain: hills go up and down, and the car rides on them', () => {
+  const { b, chassis } = carBuild();
+  b.terrain = 'hills';
+  const sim = new Simulation(b, { ...SETTINGS, motorTorque: 200 }, { groundHalfWidth: Infinity });
+  let ys = [];
+  for (let t = 0; t < 14; t += DT) { sim.step(); ys.push(sim.transformOf(chassis.uid).y); }
+  const c = sim.transformOf(chassis.uid);
+  assert(c.x < -25, `got into the hills (x = ${c.x.toFixed(1)})`);
+  assert(Math.max(...ys) - Math.min(...ys) > 1, 'went up and down');
+  const above = c.y - heightAt('hills', c.x);
+  assert(above > 0.3 && above < 3, `on the ground (${above.toFixed(2)} above it)`);
+});
+
+test('terrain: ice is slippery', () => {
+  const dist = (terrain) => {
+    const { b, chassis } = carBuild();
+    if (terrain) b.terrain = terrain;
+    const sim = new Simulation(b, { ...SETTINGS, motorRpm: 120 }, MAP); run(sim, 2);
+    return -sim.transformOf(chassis.uid).x;
+  };
+  assert(dist('ice') < dist(null) * 0.5, 'gets much less far on ice');
+});
+
+test('terrain: saved with the build', () => {
+  const b = emptyBuild(); b.terrain = 'jumps';
+  assert(sanitizeBuild(JSON.parse(JSON.stringify(b))).build.terrain === 'jumps', 'kept');
+  assert(sanitizeBuild({ parts: [], terrain: 'lava?' }).build.terrain === undefined, 'unknown terrain dropped');
+});
+
+test('smooth drawing: parts are drawn between the last two steps', () => {
+  const b = emptyBuild();
+  const ball = addPart(b, 'ball-s', 0, 5);
+  const sim = new Simulation(b, SETTINGS, MAP);
+  run(sim, 0.5);
+  const before = sim.transformOf(ball.uid).y;
+  sim.step();
+  const after = sim.transformOf(ball.uid).y;
+  sim.alpha = 0; near(sim.drawTransformOf(ball.uid).y, before, 1e-9, 'alpha 0 = last step');
+  sim.alpha = 1; near(sim.drawTransformOf(ball.uid).y, after, 1e-9, 'alpha 1 = this step');
+  sim.alpha = 0.5; near(sim.drawTransformOf(ball.uid).y, (before + after) / 2, 1e-9, 'halfway');
+});
+
+const rackBuild = () => {
+  const b = emptyBuild();
+  addPart(b, 'motor', 0, 3);
+  const gear = addPart(b, 'gear-16', 0, 3);                 // pitch radius 1.6
+  const rack = addPart(b, 'rack', 0, 3 - 1.6 - 0.15, 0, { length: 12 });
+  return { b, gear, rack };
+};
+
+test('rack: a gear turning on it slides it along (rack and pinion)', () => {
+  const { b, rack } = rackBuild();
+  const sim = new Simulation(b, SETTINGS, MAP);
+  assert(sim.racks.length === 1, 'the gear meshes with the rack');
+  run(sim, 0.5);
+  const x0 = sim.transformOf(rack.uid).x;
+  run(sim, 0.2);
+  const t = sim.transformOf(rack.uid);
+  // Motor turns anticlockwise at 30 RPM: the bottom of the gear moves right at π·1.6 m/s.
+  near((t.x - x0) / 0.2, Math.PI * 1.6, 0.3, 'slides right at the gear\'s tooth speed');
+  near(t.y, 3 - 1.75, 0.02, 'stays on its line (doesn\'t fall)');
+  run(sim, 2);
+  near(sim.transformOf(rack.uid).x, 5.7, 0.1, 'stops when its end reaches the gear');
+});
+
+test('rack: gears snap onto its teeth', () => {
+  const b = emptyBuild();
+  addPart(b, 'rack', 0, 1, 0, { length: 6 });
+  const s = snapPart(b.parts, 'gear-16', 1.03, 2.5, 0);
+  near(s.y, 1 + 0.15 + 1.6, 1e-6, 'centre one pitch radius above the teeth');
+  assert(s.hint === 'meshes with Gear Rack', s.hint);
+});
+
+test('motors: strong is slower, turbo is faster', () => {
+  const rpm = (type) => {
+    const b = emptyBuild();
+    addPart(b, type, 0, 3); const g = addPart(b, 'gear-16', 0, 3);
+    const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1);
+    return sim.readout(g.uid).rpm;
+  };
+  near(rpm('motor'), 30, 1, 'normal');
+  near(rpm('motor-strong'), 12, 1, 'strong: 0.4×');
+  near(rpm('motor-turbo'), 90, 3, 'turbo: 3×');
+});
+
+test('motors: the strong motor lifts what a normal one can\'t', () => {
+  const lifts = (type) => {
+    const b = emptyBuild();
+    addPart(b, type, 0, 3);
+    addPart(b, 'beam', 1.6, 3, 0, { length: 3.2 });
+    addPart(b, 'axle', 0, 3);
+    const crate = addPart(b, 'crate', 3.2, 3, 0);                  // 3 kg at 3.2 m: ~100 N·m to lift
+    addPart(b, 'bolt', 3.2, 3);
+    const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1);
+    return sim.transformOf(crate.uid).y > 3.3;
+  };
+  assert(!lifts('motor'), 'normal motor stalls');
+  assert(lifts('motor-strong'), 'strong motor lifts it');
+});
+
+test('servo: keys swing it to an angle and it springs back', () => {
+  const b = emptyBuild();
+  addPart(b, 'servo', 0, 3, 0, { keyCCW: 'a', keyCW: 'd' });
+  const g = addPart(b, 'gear-16', 0, 3);
+  const sim = new Simulation(b, SETTINGS, MAP);
+  run(sim, 0.5); near(sim.transformOf(g.uid).angle, 0, 0.02, 'holds the middle');
+  sim.setKeys(['a']); run(sim, 1.5); near(sim.transformOf(g.uid).angle, Math.PI / 2, 0.05, 'A: 90° anticlockwise');
+  sim.setKeys(['d']); run(sim, 2); near(sim.transformOf(g.uid).angle, -Math.PI / 2, 0.05, 'D: 90° clockwise');
+  sim.setKeys([]); run(sim, 1.5); near(sim.transformOf(g.uid).angle, 0, 0.05, 'let go: back to the middle');
+});
+
+test('servo: with no keys it sweeps, within its range', () => {
+  const b = emptyBuild();
+  addPart(b, 'servo', 0, 3, 0, { range: 45 });
+  const g = addPart(b, 'gear-16', 0, 3);
+  const sim = new Simulation(b, SETTINGS, MAP);
+  let lo = 0, hi = 0;
+  for (let t = 0; t < 5; t += DT) { sim.step(); const a = sim.transformOf(g.uid).angle; lo = Math.min(lo, a); hi = Math.max(hi, a); }
+  assert(hi > 0.6 && lo < -0.6 && hi < Math.PI / 4 + 0.05 && lo > -Math.PI / 4 - 0.05, `sweeps ±45° (${lo.toFixed(2)}..${hi.toFixed(2)})`);
+});
+
+test('flywheel: keeps spinning after the power stops', () => {
+  const b = emptyBuild();
+  addPart(b, 'motor', 0, 3, 0, { keyCCW: 'a', idle: 'free' });
+  const f = addPart(b, 'flywheel', 0, 3);
+  const sim = new Simulation(b, SETTINGS, MAP);
+  sim.setKeys(['a']); run(sim, 3);
+  const spun = sim.readout(f.uid).rpm;
+  assert(spun > 25, `spun up (${spun.toFixed(1)} RPM)`);
+  sim.setKeys([]); run(sim, 2);
+  assert(sim.readout(f.uid).rpm > spun * 0.8, 'still spinning 2 s later');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

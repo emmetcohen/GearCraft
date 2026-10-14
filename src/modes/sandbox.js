@@ -14,6 +14,7 @@
 // =============================================================================
 import { renderProps } from '../ui/props.js';
 import { EXAMPLES } from '../save/examples.js';
+import { TERRAINS } from '../physics/terrain.js';
 
 export const sandboxMode = {
   id: 'sandbox',
@@ -40,6 +41,29 @@ export const sandboxMode = {
     const renderSelection = () => renderProps(selBody, app, app.selectedParts(), { actions: true });
     app.on((type) => { if (type === 'select' || type === 'state' || type === 'changed') renderSelection(); });
     renderSelection();
+
+    // ---- terrain ------------------------------------------------------------
+    const terr = panel.section('Terrain');
+    const terrBody = document.createElement('div');
+    terrBody.className = 'terrain-pick';
+    terr.appendChild(terrBody);
+    let shown = null;
+    const renderTerrain = () => {
+      const now = app.build.terrain ?? 'flat';
+      if (now === shown) return;
+      shown = now;
+      terrBody.innerHTML = '';
+      for (const t of TERRAINS) {
+        const b = document.createElement('button');
+        b.className = `terrain-btn${t.id === now ? ' on' : ''}`;
+        b.innerHTML = `<span>${t.icon}</span>${t.name}`;
+        b.addEventListener('click', () => app.setTerrain(t.id));
+        terrBody.appendChild(b);
+      }
+    };
+    app.on((type) => { if (type === 'changed' || type === 'state') renderTerrain(); });
+    renderTerrain();
+    terr.insertAdjacentHTML('beforeend', '<p class="hint" style="margin:6px 0 0">The middle stays flat for building. Drive off either side!</p>');
 
     // ---- world & motor sliders ---------------------------------------------
     // These apply live, even while the machine is running.

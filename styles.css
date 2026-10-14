@@ -157,6 +157,15 @@ body {
 .props-pop .choice { font-size: 13px; margin: 6px 0; }
 .props-pop .toggle { font-size: 13px; }
 .select { font: inherit; font-size: 13px; font-weight: 600; border: 2.5px solid var(--ink); border-radius: 10px; padding: 2px 6px; background: #fff; color: var(--ink); }
+.terrain-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; }
+.terrain-btn {
+  font: inherit; font-size: 12px; font-weight: 700; color: var(--ink); background: #fff;
+  border: 2.5px solid var(--ink); border-radius: 10px; padding: 4px 2px; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; gap: 1px; box-shadow: 0 3px 0 var(--ink);
+}
+.terrain-btn span { font-size: 18px; line-height: 1.2; }
+.terrain-btn.on { background: var(--hot); color: #fff; }
+.terrain-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
 .key-pick { display: flex; align-items: center; gap: 4px; }
 .key-box {
   font: inherit; font-size: 14px; font-weight: 700; min-width: 44px; padding: 2px 10px;

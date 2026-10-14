@@ -14,12 +14,13 @@
 // The GAME MODE (src/modes/*) decides the map, default settings, which parts
 // are allowed and which controls appear. App itself is mode-agnostic.
 // =============================================================================
-import { getDef, partDef, roleOf, chainTeeth, chainRadius, scaleSpec, pitchRadius, isActuator, HOLE_SPACING } from './parts/partDefs.js';
+import { getDef, partDef, roleOf, chainTeeth, chainRadius, scaleSpec, pitchRadius, isActuator, motorMul, HOLE_SPACING } from './parts/partDefs.js';
 import { pickPart, partsAt, socketsOf, outerRadius, lineEnds, lineFrom, boundsOf, worldToLocal, localToWorld } from './parts/geometry.js';
 import { snapPart, snapEnd, snapDrawEnd, GRID } from './parts/snap.js';
 import { emptyBuild, cloneBuild, addPart, findPart, removePart } from './core/build.js';
 import { buildAssembly, mainKey, hubKey, WORLD } from './physics/assembly.js';
 import { solveGearTrain } from './physics/gearTrain.js';
+import { TERRAINS } from './physics/terrain.js';
 import { Simulation, DT, CRANK_TORQUE, motorKeys, keyControlKeys, isLegacyKey } from './physics/world.js';
 import { keyLabel } from './render/draw.js';
 import { Camera, Renderer } from './render/renderer.js';
@@ -134,6 +135,9 @@ export class App {
         let steps = 0;
         while (acc >= DT && steps < 12) { this.sim.step(DT); acc -= DT; steps++; }
         if (steps === 12) acc = 0; // too slow: drop time rather than spiral
+        // Draw everything part-way between the last two steps, so motion is
+        // smooth even when a frame gets 1 step and the next gets 3.
+        this.sim.alpha = acc / DT;
       }
       this._panWithKeys(dt);
       this._followCamera(dt);
@@ -188,6 +192,15 @@ export class App {
     return this.analysis;
   }
 
+  /** Pick the ground shape (saved with the build, so it can be undone). */
+  setTerrain(id) {
+    if ((this.build.terrain ?? 'flat') === id) return;
+    if (!this.editable) this.reset();
+    if (id === 'flat') delete this.build.terrain; else this.build.terrain = id;
+    this.commit();
+    this.toast(`${TERRAINS.find((t) => t.id === id).icon} ${TERRAINS.find((t) => t.id === id).name} terrain`, 1200);
+  }
+
   placePart(type, x, y, angle = 0) {
     const snap = snapPart(this.build.parts, type, x, y, angle, { grid: this.options.grid });
     const part = addPart(this.build, type, snap.x, snap.y, snap.angle);
@@ -195,7 +208,7 @@ export class App {
     const def = getDef(type);
     // Convenience: a gear dropped in empty space gets a rotating pin, so it
     // stays put and can spin. (Toggle "Auto-pin gears" to turn this off.)
-    if (this.options.autoPin && (def.kind === 'gear' || def.kind === 'compoundGear' || def.kind === 'sprocket') &&
+    if (this.options.autoPin && ['gear', 'compoundGear', 'sprocket', 'flywheel'].includes(def.kind) &&
         !this._hasMountAt(part)) {
       const pinType = this.mode.autoPinType;
       if (pinType) addPart(this.build, pinType, part.x, part.y, 0);
@@ -513,14 +526,32 @@ export class App {
     this._syncToolUI();
   }
 
-  /** Glide the camera after the followed part. */
+  /**
+   * Keep the camera on the followed part. The camera is LOCKED to the part
+   * (plus an offset that shrinks away smoothly when you start following), so
+   * however fast it goes it never lags behind or jolts. It also looks a little
+   * ahead in the direction of travel, and smooths out up-and-down bumps.
+   */
   _followCamera(dt) {
-    if (!this.sim || this.followUid == null) return;
-    const t = this.sim.transformOf(this.followUid);
+    if (!this.sim || this.followUid == null || dt <= 0) { this._fol = null; return; }
+    const t = this.sim.drawTransformOf(this.followUid);
     if (!t || !Number.isFinite(t.x)) return;
-    const k = Math.min(1, dt * 5);
-    this.camera.x += (t.x - this.camera.x) * k;
-    this.camera.y += (t.y + 1 - this.camera.y) * k;
+    const cam = this.camera;
+    let f = this._fol;
+    if (!f || f.uid !== this.followUid || f.sim !== this.sim) {
+      f = this._fol = { uid: this.followUid, sim: this.sim, ox: cam.x - t.x, oy: cam.y - t.y - 1, y: t.y, lastX: t.x, vx: 0, lead: 0 };
+    }
+    const ease = (rate) => 1 - Math.exp(-dt * rate); // frame-rate independent smoothing
+    f.ox *= 1 - ease(4);
+    f.oy *= 1 - ease(4);
+    f.y += (t.y - f.y) * ease(8);                       // soften bumps
+    f.vx += ((t.x - f.lastX) / dt - f.vx) * ease(2);    // smoothed speed
+    f.lastX = t.x;
+    const viewW = cam.w / cam.zoom;
+    const lead = Math.max(-viewW * 0.25, Math.min(viewW * 0.25, f.vx * 0.35));
+    f.lead += (lead - f.lead) * ease(1.5);
+    cam.x = t.x + f.ox + f.lead;
+    cam.y = f.y + 1 + f.oy;
   }
 
   setSetting(key, value) {
@@ -547,7 +578,7 @@ export class App {
   }
 
   transformOf(uid, layer = 'main') {
-    if (this.sim) return this.sim.transformOf(uid, layer);
+    if (this.sim) return this.sim.drawTransformOf(uid, layer);
     const p = findPart(this.build, uid);
     return p ? { x: p.x, y: p.y, angle: p.angle } : null;
   }
@@ -588,8 +619,8 @@ export class App {
     }
     const dir = driver.props.reverse ? -1 : 1;
     return { name, ratio: drive.ratio,
-      rpm: this.settings.motorRpm * dir * drive.ratio,
-      torque: this.settings.motorTorque / Math.abs(drive.ratio),
+      rpm: this.settings.motorRpm * motorMul(getDef(driver.type)).rpm * dir * drive.ratio,
+      torque: this.settings.motorTorque * motorMul(getDef(driver.type)).torque / Math.abs(drive.ratio),
       note: 'Prediction. Press Play to see it under real load.' };
   }
 
@@ -661,7 +692,7 @@ export class App {
     }
 
     this.renderer.render({
-      parts, mode: editing ? 'edit' : 'play', map: this.mode.map, grid: this.options.grid,
+      parts, mode: editing ? 'edit' : 'play', map: this.mode.map, grid: this.options.grid, terrain: this.build.terrain,
       transformOf: (uid, layer) => this.transformOf(uid, layer),
       linkEndsOf: (uid) => (this.sim ? this.sim.linkEnds(uid) : null),
       signalOf: (uid) => (this.sim ? this.sim.signals.get(uid) ?? this.sim.gadgetOn(uid) : !!findPart(this.build, uid)?.props.on),

@@ -4,7 +4,8 @@
 //   build = {
 //     version: 1,
 //     nextUid: 12,
-//     parts: [ { uid, type, x, y, angle, props: {...} }, ... ]
+//     parts: [ { uid, type, x, y, angle, props: {...} }, ... ],
+//     terrain: 'hills'    (optional: the ground shape, see terrain.js)
 //   }
 //
 // Keeping the build as plain data (no physics objects inside!) is what makes
@@ -12,6 +13,7 @@
 // The physics world is always rebuilt FROM the build when you press Play.
 // =============================================================================
 import { hasDef } from '../parts/partDefs.js';
+import { isTerrain } from '../physics/terrain.js';
 
 export const BUILD_VERSION = 1;
 
@@ -72,5 +74,6 @@ export function sanitizeBuild(data) {
     seen.add(p.uid);
   }
   out.nextUid = next;
+  if (isTerrain(data.terrain) && data.terrain !== 'flat') out.terrain = data.terrain;
   return { build: out, dropped };
 }

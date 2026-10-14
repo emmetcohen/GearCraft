@@ -65,10 +65,21 @@ export const PARTS = [
     teeth: 12, mass: 0.6, shape: 'gear', color: '#ffd23f' },
   { id: 'gear-16', name: 'Gear 16T', category: 'gears', kind: 'gear', size: 'M',
     teeth: 16, mass: 0.9, shape: 'gear', color: '#ffc43d' },
+  { id: 'gear-20', name: 'Gear 20T', category: 'gears', kind: 'gear', size: 'M',
+    teeth: 20, mass: 1.1, shape: 'gear', color: '#ffbd33' },
   { id: 'gear-24', name: 'Gear 24T', category: 'gears', kind: 'gear', size: 'L',
     teeth: 24, mass: 1.4, shape: 'gear', color: '#ffb627' },
   { id: 'gear-32', name: 'Gear 32T', category: 'gears', kind: 'gear', size: 'XL',
     teeth: 32, mass: 2.2, shape: 'gear', color: '#ff9f1c' },
+  { id: 'gear-40', name: 'Gear 40T', category: 'gears', kind: 'gear', size: 'XL',
+    teeth: 40, mass: 3.2, shape: 'gear', color: '#f8961e' },
+  { id: 'gear-48', name: 'Gear 48T', category: 'gears', kind: 'gear', size: 'XXL',
+    teeth: 48, mass: 4.4, shape: 'gear', color: '#f3722c' },
+  // A straight bar of teeth: a gear meshed on its toothed side turns into
+  // sliding (rack and pinion: steering, lifts, gates, sliding doors).
+  { id: 'rack', name: 'Gear Rack', category: 'gears', kind: 'rack', size: 'M', drawn: true,
+    length: 4.0, thickness: 0.5, massPerLength: 0.3, shape: 'rack', color: '#ffb627',
+    tip: 'Drag to draw it (teeth on top). Put a gear on its teeth and the rack slides when the gear turns: rack and pinion! It slides along whatever holds the gear.' },
   // Sprockets don't mesh with gears: link two of them with a chain. A chain
   // keeps both turning the SAME way, at any distance.
   { id: 'sprocket-10', name: 'Sprocket 10T', category: 'gears', kind: 'sprocket', size: 'S',
@@ -95,6 +106,9 @@ export const PARTS = [
     radius: 1.0, mass: 1.5, shape: 'wheel', color: '#ff5d73' },
   { id: 'wheel-l', name: 'Wheel L', category: 'movers', kind: 'wheel', size: 'L',
     radius: 1.6, mass: 3.5, shape: 'wheel', color: '#e63958' },
+  { id: 'wheel-xl', name: 'Monster Wheel', category: 'movers', kind: 'wheel', size: 'XL',
+    radius: 2.2, mass: 6, shape: 'wheel', color: '#9b2226',
+    tip: 'A huge tyre for monster trucks: rolls over bumps and craters. Needs a strong motor (or a gear-down) to turn.' },
   // Drive wheels have a CRANK PIN off-centre. Put a beam hole on the pin and
   // the beam pivots there: side rods for trains, pistons, walking legs...
   // pinOffset is deliberately NOT a multiple of HOLE_SPACING, so a side rod
@@ -116,6 +130,21 @@ export const PARTS = [
   { id: 'piston', name: 'Piston', category: 'movers', kind: 'piston', size: 'M', drawn: true,
     length: 2.4, thickness: 0.5, massPerLength: 0.5, shape: 'piston', color: '#8338ec',
     tip: 'Drag to draw it. It pushes out and pulls back on its own, or give it keys / wire a switch. Its ends pivot; put BOTH yellow base joints on a beam and it can\'t swing. The Screwdriver can make it start pushed out.' },
+  // Motor variants: same behaviour, with their own strength and speed
+  // (× the Motor power and Motor speed sliders).
+  { id: 'motor-strong', name: 'Strong Motor', category: 'movers', kind: 'motor', size: 'L',
+    housing: 1.5, mass: 3.5, torqueMul: 3, rpmMul: 0.4, shape: 'motor', color: '#7b2cbf',
+    tip: '3× the torque at less than half the speed. For heavy lifting and monster wheels.' },
+  { id: 'motor-turbo', name: 'Turbo Motor', category: 'movers', kind: 'motor', size: 'S',
+    housing: 1.0, mass: 1.2, torqueMul: 0.6, rpmMul: 3, shape: 'motor', color: '#f15bb5',
+    tip: '3× the speed, but weaker. Go fast on flat ground, or gear it down.' },
+  { id: 'servo', name: 'Servo', category: 'movers', kind: 'motor', size: 'S', servo: true,
+    housing: 1.0, mass: 0.8, torqueMul: 1.5, rpmMul: 1.5, shape: 'motor', color: '#00a6ed',
+    tip: 'Turns to an ANGLE and holds it: arms, steering, flippers. Its keys swing it one way or the other and it springs back to the middle when you let go. With no keys it sweeps back and forth.' },
+  // A heavy disc that keeps spinning: smooths out a machine, or stores energy.
+  { id: 'flywheel', name: 'Flywheel', category: 'movers', kind: 'flywheel', size: 'L',
+    radius: 1.0, mass: 8, shape: 'flywheel', color: '#6c757d',
+    tip: 'A heavy spinning disc. Hard to get going, hard to stop: put it on an axle to smooth out a machine.' },
   { id: 'crank', name: 'Hand Crank', category: 'movers', kind: 'crank', size: 'M',
     armLength: 1.0, mass: 0.5, shape: 'crank', color: '#ff70a6',
     tip: 'Human power! While playing, drag the handle around to turn it.' },
@@ -309,6 +338,7 @@ export function scaleSpec(def) {
     case 'gear':     return [{ key: 'teeth', min: 8, max: 64, step: 4, unit: 'teeth' }];
     case 'sprocket': return [{ key: 'teeth', min: 6, max: 48, step: 2, unit: 'teeth' }];
     case 'wheel':    return [{ key: 'radius', min: 0.3, max: 3, step: 0.1, unit: 'm' }];
+    case 'flywheel': return [{ key: 'radius', min: 0.4, max: 3, step: 0.1, unit: 'm' }];
     case 'ball':     return [{ key: 'radius', min: 0.2, max: 3, step: 0.1, unit: 'm' }];
     case 'crate':    return [{ key: 'width', axis: 'x', min: 0.4, max: 8, step: 0.2, unit: 'm' },
                              { key: 'height', axis: 'y', min: 0.4, max: 8, step: 0.2, unit: 'm' }];
@@ -319,6 +349,15 @@ export function scaleSpec(def) {
     default: return def.drawn ? [{ key: 'length', unit: 'm' }] : null;
   }
 }
+
+/** A rack's pitch line (where gear teeth meet it): this far above its centre line. */
+export const RACK_PITCH = 0.15;
+/** How far off that a gear still meshes with a rack (covers a motor or pin
+ *  snapped to the grid first). */
+export const RACK_TOL = 0.22;
+
+/** A motor's strength and speed, × the sliders: { torque, rpm }. */
+export const motorMul = (def) => ({ torque: def.torqueMul ?? 1, rpm: def.rpmMul ?? 1 });
 
 /** A piston's second base joint: this far up the cylinder from its bottom
  *  end (a whole number of holes, so a beam along the piston hits both). */
@@ -356,11 +395,13 @@ export const isDrawn = (def) => !!def.drawn;
  *   gadget    – thruster/magnet/cannon: ride on the part under them
  *   door      – a trap door: a flap on a powered hinge
  *   latch     – rides on one part under it, holds the next one until released
+ *   rack      – a toothed bar that slides when a gear on it turns
  *   object    – loose test objects (balls, crates) or map pieces (ramps)
  */
 export function roleOf(kind) {
   switch (kind) {
-    case 'gear': case 'compoundGear': case 'wheel': case 'sprocket': return 'rotor';
+    case 'gear': case 'compoundGear': case 'wheel': case 'sprocket': case 'flywheel': return 'rotor';
+    case 'rack': return 'rack';
     case 'beam': case 'slider': return 'beam';
     case 'motor': case 'crank': return 'driver';
     case 'axle': case 'hinge': case 'fixedPin': case 'rotPin': return 'connector';

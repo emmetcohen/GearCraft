@@ -9,8 +9,8 @@
 // Gears are then rotated so their teeth slot between the neighbour's teeth
 // (purely cosmetic — the physics uses ratio math, not teeth).
 // =============================================================================
-import { getDef, partDef, gearLayers, roleOf, pistonExt, LENGTH_STEP } from './partDefs.js';
-import { socketsOf, gearCirclesOf, holesOf, localToWorld, lineEnds, partsAt } from './geometry.js';
+import { getDef, partDef, gearLayers, roleOf, pistonExt, LENGTH_STEP, RACK_PITCH, RACK_TOL } from './partDefs.js';
+import { socketsOf, gearCirclesOf, holesOf, localToWorld, worldToLocal, lineEnds, partsAt } from './geometry.js';
 import { MESH_TOL } from '../physics/gearTrain.js';
 
 export const SOCKET_SNAP = 0.5;   // world units
@@ -82,6 +82,28 @@ export function doubleMesh(others, def, x, y, angle) {
   if (!best) return null;
   const pa = others.find((p) => p.uid === best.a.uid), pb = others.find((p) => p.uid === best.b.uid);
   return { x: best.x, y: best.y, angle, hint: `meshes with ${gearName(pa)} + ${gearName(pb)}` };
+}
+
+/**
+ * A gear dropped near a rack's teeth: the spot where it meshes with them
+ * (its centre one pitch radius above the rack's pitch line).
+ * @returns {{ x, y, angle, hint, err }} or null
+ */
+export function rackMesh(others, def, x, y, angle) {
+  if (def.kind !== 'gear') return null;
+  const r = gearLayers(def)[0].r;
+  let best = null;
+  for (const p of others) {
+    if (getDef(p.type).kind !== 'rack') continue;
+    const L = partDef(p).length;
+    const loc = worldToLocal(p.x, p.y, p.angle, x, y);
+    if (Math.abs(loc.x) > L / 2) continue;
+    const err = Math.abs(loc.y - (RACK_PITCH + r));
+    if (err < MESH_SNAP && (!best || err < best.err)) {
+      best = { ...localToWorld(p.x, p.y, p.angle, loc.x, RACK_PITCH + r), angle, hint: 'meshes with Gear Rack', err };
+    }
+  }
+  return best;
 }
 
 /** Nearest socket of `others` to (x, y) within `radius`. */
@@ -159,6 +181,11 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
     return out;
   }
 
+  if (role === 'rack') {
+    if (useGrid) { out.x = roundTo(x, GRID / 2); out.y = roundTo(y, GRID / 2); }
+    return out;
+  }
+
   if (role === 'beam') {
     // Try every hole of this beam against every socket nearby.
     let best = null;
@@ -177,6 +204,11 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
   const s = nearestSocket(others, x, y, SOCKET_SNAP, { noBolt: role === 'rotor' || role === 'driver' });
   if (s) {
     out = { x: s.x, y: s.y, angle, hint: socketLabel(getDef(s.part.type), s.socket) };
+    const rm = rackMesh(others, def, s.x, s.y, angle);
+    if (rm && rm.err <= RACK_TOL) out.hint += ' · meshes with Gear Rack';
+  } else if (def.kind === 'gear' && rackMesh(others, def, x, y, angle)) {
+    out = rackMesh(others, def, x, y, angle);
+    // On a rack's teeth.
   } else if ((def.kind === 'gear' || def.kind === 'compoundGear') && (out = doubleMesh(others, def, x, y, angle))) {
     // Dropped between two gears: sits where it meshes with BOTH.
   } else if (def.kind === 'gear' || def.kind === 'compoundGear') {

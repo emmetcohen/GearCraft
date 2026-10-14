@@ -16,12 +16,13 @@
 // down or stalls. Nothing ever breaks.
 // =============================================================================
 import * as planck from '../../lib/planck.mjs';
-import { getDef, partDef, gearLayers, roleOf, isActuator, pistonStroke, pistonExt } from '../parts/partDefs.js';
-import { socketsOf, lineEnds, partsAt } from '../parts/geometry.js';
+import { getDef, partDef, gearLayers, roleOf, isActuator, pistonStroke, pistonExt, pitchRadius, motorMul, RACK_PITCH, RACK_TOL } from '../parts/partDefs.js';
+import { socketsOf, lineEnds, partsAt, worldToLocal } from '../parts/geometry.js';
 import { buildAssembly, WORLD, mainKey, hubKey, CLUSTER_TOL } from './assembly.js';
 import { solveGearTrain } from './gearTrain.js';
+import { heightAt, isFlat, terrainFriction } from './terrain.js';
 
-const { World, Vec2, Circle, Box, Polygon, RevoluteJoint, GearJoint, MouseJoint, PrismaticJoint, DistanceJoint, RopeJoint, WeldJoint } = planck;
+const { World, Vec2, Circle, Box, Polygon, Chain, RevoluteJoint, GearJoint, MouseJoint, PrismaticJoint, DistanceJoint, RopeJoint, WeldJoint } = planck;
 
 // Collision categories (bit flags). Machine parts don't collide with each
 // other — gears are connected by math, not by teeth bumping — but everything
@@ -67,10 +68,16 @@ export const DOOR_SWING = Math.PI / 2;
 export const LATCH_AUTO = 2;             // s: an uncontrolled latch lets go after this
 export const BOMB_RANGE = 4.5;           // m
 export const BOMB_KICK = 30;             // N·s at point blank
-export const BOMB_IMPACT = 7;            // m/s: a bump this hard sets a bomb off
+export const BOMB_IMPACT = 7;
+export const SERVO_RANGE = { 45: Math.PI / 4, 90: Math.PI / 2, 135: (3 * Math.PI) / 4 };            // m/s: a bump this hard sets a bomb off
 export const CONVEYOR_SPEED = 3;         // m/s
 export const WATER_DENSITY = 1.5;        // kg/m² (2D): lighter parts float
 const MAX_SHOTS = 40;
+/** Terrain is built in chunks this wide (m), sampled every TERRAIN_STEP. */
+const CHUNK = 40;
+const TERRAIN_STEP = 0.25;
+/** How far ahead of anything moving the terrain is kept built (m). */
+const TERRAIN_AHEAD = 120;
 
 /** A gadget's keys: { plus, minus } ('none' = unused). */
 export function gadgetKeys(part) {
@@ -101,6 +108,10 @@ export class Simulation {
    */
   constructor(build, settings, map) {
     this.parts = build.parts.map((p) => ({ ...p, props: { ...p.props } }));
+    this.terrain = build.terrain ?? 'flat';
+    /** Render interpolation: 0..1 of the way from the last step to the next
+     *  (set by the app each frame, so fast things move smoothly on screen). */
+    this.alpha = 1;
     this.byUid = new Map(this.parts.map((p) => [p.uid, p]));
     this.settings = { ...settings };
     this.time = 0;
@@ -126,18 +137,22 @@ export class Simulation {
     this.doors = new Map();       // trap door uid -> { joint, sign }
     this.latches = new Map();     // latch uid -> { a, b, la, lb, ref, x, y, joint }
     this.booms = [];              // explosions: { x, y, age }
+    this.racks = [];              // [{ uid, gearUid, prismatic }]
+    this.extraEdges = [];         // joints added here (racks) for "is it pinned?": [{ a, b }] assembly ids
 
     this._createBodies(map);
     this._createRevolutes();
     this._createPrismatics();
     this._createHinges();
     this._createGearJoints();
+    this._createRacks();
     this._createLinks();
     this._createLatches();
     this._createWires();
     this.world.on('pre-solve', (contact) => this._conveyorContact(contact));
     this.applySettings(settings);
 
+    this._steps = 0;
     this.grab = null;        // mouse joint on a loose body
     this.crankGrab = null;   // { uid, target: {x,y} }
   }
@@ -150,8 +165,16 @@ export class Simulation {
     // groundHalfWidth: Infinity = endless ground. Box2D needs a finite shape,
     // so "endless" is a million metres each way (days of driving).
     const half = Number.isFinite(map.groundHalfWidth) ? map.groundHalfWidth : 1e6;
-    // The flat ground: a wide box whose top surface is y = 0.
-    this._addFixture(ground, Box(half, 5, Vec2(0, -5), 0), { friction: 1, cat: CAT.GROUND });
+    this.groundHalf = half;
+    this.chunks = new Set();
+    if (isFlat(this.terrain)) {
+      // The flat ground: a wide box whose top surface is y = 0.
+      this._addFixture(ground, Box(half, 5, Vec2(0, -5), 0), { friction: terrainFriction(this.terrain), cat: CAT.GROUND });
+    } else {
+      // Shaped ground: built in chunks around wherever things are.
+      const xs = this.parts.map((p) => p.x);
+      this._ensureTerrain(Math.min(0, ...xs) - TERRAIN_AHEAD, Math.max(0, ...xs) + TERRAIN_AHEAD);
+    }
 
     for (const ab of this.assembly.bodies) {
       let body = ground;
@@ -169,6 +192,38 @@ export class Simulation {
         this._addPartFixtures(body, part, el.sub, lx, ly);
       }
     }
+  }
+
+  /** Make sure the terrain exists from x0 to x1. */
+  _ensureTerrain(x0, x1) {
+    if (isFlat(this.terrain)) return;
+    const lo = Math.max(-this.groundHalf, x0), hi = Math.min(this.groundHalf, x1);
+    for (let i = Math.floor(lo / CHUNK); i * CHUNK < hi; i++) {
+      if (this.chunks.has(i)) continue;
+      this.chunks.add(i);
+      const a = i * CHUNK, n = Math.round(CHUNK / TERRAIN_STEP);
+      const pt = (k) => Vec2(a + k * TERRAIN_STEP, heightAt(this.terrain, a + k * TERRAIN_STEP));
+      const verts = [];
+      for (let k = 0; k <= n; k++) verts.push(pt(k));
+      const chain = Chain(verts, false);
+      // Ghost vertices: the neighbours' points, so things slide smoothly
+      // from one chunk to the next instead of catching on the seam.
+      chain.setPrevVertex(pt(-1));
+      chain.setNextVertex(pt(n + 1));
+      this._addFixture(this.ground, chain, { friction: terrainFriction(this.terrain), cat: CAT.GROUND });
+    }
+  }
+
+  /** Keep terrain built ahead of everything that moves. */
+  _growTerrain() {
+    let lo = Infinity, hi = -Infinity;
+    for (let b = this.world.getBodyList(); b; b = b.getNext()) {
+      if (!b.isDynamic()) continue;
+      const x = b.getPosition().x;
+      if (x < lo) lo = x;
+      if (x > hi) hi = x;
+    }
+    if (lo <= hi) this._ensureTerrain(lo - TERRAIN_AHEAD, hi + TERRAIN_AHEAD);
   }
 
   /** Add the collision shapes for one element of a part. (lx, ly) = part
@@ -199,6 +254,15 @@ export class Simulation {
         add(Circle(c, def.radius), Math.PI * def.radius ** 2,
           { cat: CAT.WHEEL, friction: 1.6, restitution: 0.05 });
         break;
+      case 'flywheel':
+        add(Circle(c, def.radius), Math.PI * def.radius ** 2, { cat: CAT.MACHINE, friction: 0.4 });
+        break;
+      case 'rack': {
+        // The bar (the teeth are just drawn).
+        const hx = def.length / 2, hy = 0.2;
+        add(Box(hx, hy, at(0, -0.05), a), 4 * hx * hy, { cat: CAT.MACHINE, friction: 0.5 });
+        break;
+      }
       case 'sprocket':
         add(Circle(c, def.radius), Math.PI * def.radius ** 2, { cat: CAT.MACHINE, friction: 0.4 });
         break;
@@ -548,7 +612,7 @@ export class Simulation {
   linkEnds(uid) {
     const l = this.links.get(uid);
     if (!l) return null;
-    const a = l.bodyA.getWorldPoint(l.la), b = l.bodyB.getWorldPoint(l.lb);
+    const a = this._drawPoint(l.bodyA, l.la), b = this._drawPoint(l.bodyB, l.lb);
     return [{ x: a.x, y: a.y }, { x: b.x, y: b.y }];
   }
 
@@ -574,6 +638,40 @@ export class Simulation {
       const ratio = (m.chain ? -1 : 1) * m.b.teeth / m.a.teeth;
       const gj = this.world.createJoint(GearJoint({}, j1.getBodyB(), j2.getBodyB(), j1, j2, ratio));
       this.gearJoints.push(gj);
+    }
+  }
+
+  /** Racks: a gear meshed on a rack's teeth slides it (rack and pinion).
+   *  The rack slides along whatever holds the gear. */
+  _createRacks() {
+    for (const rack of this.parts) {
+      if (getDef(rack.type).kind !== 'rack') continue;
+      const def = partDef(rack);
+      const rackBody = this.elements.get(mainKey(rack.uid))?.body;
+      if (!rackBody || !rackBody.isDynamic()) continue;
+      for (const g of this.parts) {
+        if (getDef(g.type).kind !== 'gear') continue;
+        const r = pitchRadius(partDef(g).teeth);
+        const loc = worldToLocal(rack.x, rack.y, rack.angle, g.x, g.y);
+        if (Math.abs(loc.y - (RACK_PITCH + r)) > RACK_TOL || Math.abs(loc.x) > def.length / 2) continue;
+        const gearBodyId = this.assembly.bodyOf(mainKey(g.uid));
+        const axle = this.axleJoints.get(gearBodyId);
+        if (!axle || this.jammedBodies.has(gearBodyId)) continue;
+        const carrier = axle.getBodyA();
+        if (carrier === rackBody) continue;
+        // Slide along the rack, until its end reaches the gear.
+        const axis = Vec2(Math.cos(rack.angle), Math.sin(rack.angle));
+        const prismatic = this.world.createJoint(PrismaticJoint({
+          enableLimit: true, lowerTranslation: loc.x - def.length / 2 + 0.3, upperTranslation: loc.x + def.length / 2 - 0.3,
+        }, carrier, rackBody, Vec2(g.x, g.y), axis));
+        // Turning the gear θ (anticlockwise) moves its bottom tooth, and the
+        // rack, r·θ along the rack: angle − translation / r = constant.
+        this.world.createJoint(GearJoint({}, axle.getBodyB(), rackBody, axle, prismatic, -1 / r));
+        this.racks.push({ uid: rack.uid, gearUid: g.uid, prismatic });
+        this.extraEdges.push({ a: this.assembly.axleOf(gearBodyId).a, b: this.assembly.bodyOf(mainKey(rack.uid)) });
+        rackBody.setSleepingAllowed(false);
+        break;
+      }
     }
   }
 
@@ -603,34 +701,60 @@ export class Simulation {
       if (this.jammedBodies.has(d.bodyId)) continue; // jammed trains stay locked
       if (d.kind === 'motor') this._driveMotor(d);
     }
+    this._driveServos();
     for (const b of this.bodies.values()) b.setAwake(true);
   }
 
-  _driveMotor(d) {
+  /** Which way a motor is told to turn: -1..1, or null if nothing controls
+   *  it (keys or wires). */
+  _motorSpin(d) {
     const p = d.part.props;
     const dir = p.reverse ? -1 : 1;
+    const keys = motorKeys(d.part);
+    const ctls = this.wires.get(d.part.uid);
+    if (!keys && !ctls) return null;
+    let spin = keys ? (this.held.has(keys.ccw) ? 1 : 0) - (this.held.has(keys.cw) ? 1 : 0) : 0;
+    for (const uid of ctls || []) {
+      const ctl = this.byUid.get(uid);
+      const v = this.signals.get(uid);
+      if (getDef(ctl.type).kind === 'keyButton' && !isLegacyKey(ctl)) spin += v;
+      else if (v) spin += (ctl.props.reverse ? -1 : 1) * dir * Number(v);
+    }
+    return Math.max(-1, Math.min(1, spin));
+  }
+
+  /** Servos steer to an angle every step: their keys swing them to one side
+   *  or the other (back to the middle when let go); uncontrolled they sweep. */
+  _driveServos() {
+    for (const d of this.driverJoints.values()) {
+      const def = getDef(d.part.type);
+      if (!def.servo || this.jammedBodies.has(d.bodyId)) continue;
+      const range = SERVO_RANGE[d.part.props.range] ?? SERVO_RANGE[90];
+      const spin = this._motorSpin(d);
+      const dir = d.part.props.reverse ? -1 : 1;
+      const target = (spin == null ? Math.sin(this.time * 1.5) : spin * dir) * range;
+      const max = rpmToRad(this.settings.motorRpm * motorMul(def).rpm);
+      const err = target - d.joint.getJointAngle();
+      d.joint.setMotorSpeed(Math.max(-max, Math.min(max, err * 12)));
+      d.joint.setMaxMotorTorque(this.settings.motorTorque * motorMul(def).torque);
+    }
+  }
+
+  _driveMotor(d) {
+    if (getDef(d.part.type).servo) return; // steered every step instead
+    const p = d.part.props;
+    const dir = p.reverse ? -1 : 1;
+    const mul = motorMul(getDef(d.part.type));
     // spin: +1 = counter-clockwise (the physics' positive direction).
     // A motor with its own keys or wired controls only runs when told to:
     //   its keys: ↻ key turns it clockwise (rolls a car right), ↺ key the other way
     //   switches/buttons: on = its normal direction (or backwards if set to Reverse)
     //   Key controls: their ↻ / ↺ keys, like the motor's own keys
     // With nothing pressed it brakes (or spins freely if its idle mode is 'free').
-    const keys = motorKeys(d.part);
-    const ctls = this.wires.get(d.part.uid);
-    let spin = dir;
-    if (keys || ctls) {
-      spin = keys ? (this.held.has(keys.ccw) ? 1 : 0) - (this.held.has(keys.cw) ? 1 : 0) : 0;
-      for (const uid of ctls || []) {
-        const ctl = this.byUid.get(uid);
-        const v = this.signals.get(uid);
-        if (getDef(ctl.type).kind === 'keyButton' && !isLegacyKey(ctl)) spin += v;
-        else if (v) spin += (ctl.props.reverse ? -1 : 1) * dir * Number(v);
-      }
-      spin = Math.max(-1, Math.min(1, spin));
-    }
+    const spin = this._motorSpin(d) ?? dir;
     const idleFree = spin === 0 && p.idle === 'free';
-    d.joint.setMotorSpeed(spin * rpmToRad(this.settings.motorRpm));
-    d.joint.setMaxMotorTorque(idleFree ? AXLE_FRICTION * this.settings.friction : this.settings.motorTorque);
+    d.joint.setMotorSpeed(spin * rpmToRad(this.settings.motorRpm * mul.rpm));
+    d.joint.setMaxMotorTorque(idleFree ? AXLE_FRICTION * this.settings.friction : this.settings.motorTorque * mul.torque);
   }
 
   /** Old API: arrow keys as a number, -1 (←), 0 or 1 (→). */
@@ -652,7 +776,7 @@ export class Simulation {
   autoFollowTarget() {
     // Pinned = joined to the background through any chain of joints (a
     // piston rod on a piston on a pin is pinned too).
-    const edges = [...this.assembly.revolutes, ...this.assembly.prismatics, ...this.assembly.hinges];
+    const edges = [...this.assembly.revolutes, ...this.assembly.prismatics, ...this.assembly.hinges, ...this.extraEdges];
     const pinned = new Set([WORLD]);
     for (let grew = true; grew;) {
       grew = false;
@@ -705,7 +829,14 @@ export class Simulation {
 
   // ----------------------------------------------------------------- step --
   step(dt = DT) {
+    // Remember where every body was, for drawing in between steps.
+    for (let b = this.world.getBodyList(); b; b = b.getNext()) {
+      const p = b.getPosition();
+      b.prevX = p.x; b.prevY = p.y; b.prevA = b.getAngle();
+    }
+    if (++this._steps % 30 === 0) this._growTerrain();
     this._updateCranks();
+    this._driveServos();
     this._updateControls();
     this._updateGadgets(dt);
     this.world.step(dt, VEL_ITERS, POS_ITERS);
@@ -740,7 +871,7 @@ export class Simulation {
       // Smooth the readings: solver impulses jitter step to step.
       t.torque += (torque - t.torque) * 0.1;
       t.speed += (j.getJointSpeed() - t.speed) * 0.2;
-      t.maxTorque = d.kind === 'motor' ? this.settings.motorTorque : CRANK_TORQUE;
+      t.maxTorque = d.kind === 'motor' ? this.settings.motorTorque * motorMul(getDef(d.part.type)).torque : CRANK_TORQUE;
       t.commanded = j.getMotorSpeed();
       const active = d.kind === 'motor' || this.crankGrab?.uid === uid;
       t.load = t.jammed ? 1 : active && t.maxTorque > 0 ? Math.min(1, t.torque / t.maxTorque) : 0;
@@ -1023,7 +1154,7 @@ export class Simulation {
 
   /** Cannon balls in flight, for drawing: [{ x, y, angle, r }]. */
   get shotsNow() {
-    return this.shots.map((s) => { const p = s.body.getPosition(); return { x: p.x, y: p.y, angle: s.body.getAngle(), r: 0.25 }; });
+    return this.shots.map((s) => { const p = this._drawPoint(s.body, Vec2(0, 0)); return { x: p.x, y: p.y, angle: p.a, r: 0.25 }; });
   }
 
   /** Conveyor belts drag whatever touches them along the belt. */
@@ -1077,6 +1208,25 @@ export class Simulation {
   }
 
   // -------------------------------------------------------------- queries --
+  /** A body-local point, drawn between the last two steps (see alpha). */
+  _drawPoint(body, local) {
+    const t = this.alpha;
+    if (body.prevX === undefined || t >= 1) { const p = body.getWorldPoint(local); return { x: p.x, y: p.y, a: body.getAngle() }; }
+    const p = body.getPosition();
+    const x = body.prevX + (p.x - body.prevX) * t, y = body.prevY + (p.y - body.prevY) * t;
+    const a = body.prevA + (body.getAngle() - body.prevA) * t;
+    const c = Math.cos(a), s = Math.sin(a);
+    return { x: x + local.x * c - local.y * s, y: y + local.x * s + local.y * c, a };
+  }
+
+  /** Where to DRAW a part: like transformOf, but smoothed between steps. */
+  drawTransformOf(uid, sub = 'main') {
+    const el = this.elements.get(sub === 'hub' ? hubKey(uid) : mainKey(uid));
+    if (!el) return null;
+    const p = this._drawPoint(el.body, Vec2(el.lx, el.ly));
+    return { x: p.x, y: p.y, angle: p.a + el.part.angle };
+  }
+
   /** Current world transform of a part (sub = 'main' or 'hub'). */
   transformOf(uid, sub = 'main') {
     const key = sub === 'hub' ? hubKey(uid) : mainKey(uid);

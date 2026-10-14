@@ -72,7 +72,7 @@ export function lineFrom(a, b) {
 export function socketsOf(part) {
   const def = partDef(part);
   const role = roleOf(def.kind);
-  if (role === 'object' || role === 'link' || role === 'control' || role === 'bolt' || role === 'gadget' || role === 'latch') return [];
+  if (['object', 'link', 'control', 'bolt', 'gadget', 'latch', 'rack'].includes(role)) return [];
   if (role === 'door') {
     // The hinge, at the end it was drawn from. Its bracket MOUNTS (bolts) onto
     // whatever is there; the flap swings on the bracket.
@@ -176,6 +176,7 @@ export function pickPriority(def) {
   if (def.kind === 'track') return 0;
   switch (roleOf(def.kind)) {
     case 'connector': return 4;
+    case 'rack': return 1;
     case 'driver': return 3;
     case 'rotor': return 2;
     case 'beam': return 1;

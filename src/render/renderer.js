@@ -6,6 +6,7 @@
 // =============================================================================
 import { getDef, partDef, OUTLINE, roleOf, chainRadius } from '../parts/partDefs.js';
 import { outerRadius, socketsOf, lineEnds, lineFrom } from '../parts/geometry.js';
+import { heightAt, isFlat, terrainColors } from '../physics/terrain.js';
 import { drawPart, drawWhole, hasHub, hubFirst, drawChain, ropeStroke } from './draw.js';
 
 /** Camera: world point (x, y) at the canvas centre, `zoom` pixels per unit. */
@@ -35,6 +36,7 @@ function layerOf(def) {
   if (def.kind === 'water') return 8; // see-through, on top of everything
   if (def.kind === 'piston' || def.kind === 'trapdoor') return 1.6;
   if (def.kind === 'latch') return 5.9;
+  if (def.kind === 'rack') return 2.5; // under the gears that mesh with it
   if (roleOf(def.kind) === 'gadget') return 5.7;
   if (def.kind === 'chain') return 4;
   if (def.kind === 'wire') return 7;
@@ -225,13 +227,15 @@ export class Renderer {
 
     // Ground: grass strip on dirt, top at y = 0, out to ±halfWidth.
     const half = scene.map.groundHalfWidth;
+    const colors = terrainColors(scene.terrain);
+    if (!isFlat(scene.terrain)) { this._terrain(scene, tl, br, half, colors); return; }
     const g0 = camera.worldToScreen(-half, 0), g1 = camera.worldToScreen(half, 0);
     const left = Math.max(-10, g0.x), right = Math.min(W + 10, g1.x);
     if (g0.y < H && right > left) {
-      ctx.fillStyle = '#a0704a';
+      ctx.fillStyle = colors.dirt;
       ctx.fillRect(left, g0.y, right - left, H - g0.y + 10);
       // Pebbles (deterministic so they don't flicker).
-      ctx.fillStyle = '#8a5e3c';
+      ctx.fillStyle = colors.pebble;
       const pstep = camera.zoom > 8 ? 1 : 4;
       for (let wx = Math.floor(tl.x / pstep) * pstep; wx < br.x; wx += pstep) {
         const h = Math.sin(wx * 12.9898) * 43758.5453;
@@ -240,12 +244,72 @@ export class Renderer {
         ctx.beginPath(); ctx.arc(s.x, s.y, camera.zoom * 0.08, 0, Math.PI * 2); ctx.fill();
       }
       const gh = Math.max(4, camera.zoom * 0.3);
-      ctx.fillStyle = '#7bd389';
+      ctx.fillStyle = colors.top;
       ctx.fillRect(left, g0.y, right - left, gh);
       ctx.strokeStyle = OUTLINE;
       ctx.lineWidth = 3;
       ctx.beginPath(); ctx.moveTo(left, g0.y); ctx.lineTo(right, g0.y); ctx.stroke();
     }
+  }
+
+  /** Shaped ground (hills, jumps...): the same height function the physics uses. */
+  _terrain(scene, tl, br, half, colors) {
+    const { ctx, camera } = this;
+    const H = camera.h;
+    const x0 = Math.max(-half, tl.x - 1), x1 = Math.min(half, br.x + 1);
+    if (x1 <= x0) return;
+    // Sample about every 3 px (but never finer than the physics' 0.25 m).
+    const step = Math.max(0.25, 3 / camera.zoom);
+    const pts = [];
+    for (let x = Math.floor(x0 / step) * step; x <= x1 + step; x += step) {
+      const s = camera.worldToScreen(x, heightAt(scene.terrain, x));
+      pts.push(s);
+    }
+    const top = Math.min(...pts.map((p) => p.y));
+    if (top > H) return;
+    const surface = () => { ctx.moveTo(pts[0].x, pts[0].y); for (const p of pts) ctx.lineTo(p.x, p.y); };
+    ctx.beginPath();
+    surface();
+    ctx.lineTo(pts[pts.length - 1].x, H + 10);
+    ctx.lineTo(pts[0].x, H + 10);
+    ctx.closePath();
+    ctx.fillStyle = colors.dirt;
+    ctx.fill();
+    // Pebbles under the surface (deterministic so they don't flicker).
+    ctx.fillStyle = colors.pebble;
+    const pstep = camera.zoom > 8 ? 1 : 4;
+    for (let wx = Math.floor(x0 / pstep) * pstep; wx < x1; wx += pstep) {
+      const h = Math.sin(wx * 12.9898) * 43758.5453;
+      const f = h - Math.floor(h);
+      const s = camera.worldToScreen(wx + f, heightAt(scene.terrain, wx + f) - 0.6 - f * 2);
+      ctx.beginPath(); ctx.arc(s.x, s.y, camera.zoom * 0.08, 0, Math.PI * 2); ctx.fill();
+    }
+    // Grass (or ice / moon dust) along the top, then the outline.
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    surface();
+    ctx.strokeStyle = colors.top;
+    ctx.lineWidth = Math.max(8, camera.zoom * 0.6);
+    ctx.save();
+    ctx.clip(this._belowPath(pts, H));
+    ctx.stroke();
+    ctx.restore();
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** A Path2D of everything under a surface line (for clipping the grass strip). */
+  _belowPath(pts, H) {
+    const p = new Path2D();
+    p.moveTo(pts[0].x, pts[0].y);
+    for (const q of pts) p.lineTo(q.x, q.y);
+    p.lineTo(pts[pts.length - 1].x, H + 10);
+    p.lineTo(pts[0].x, H + 10);
+    p.closePath();
+    return p;
   }
 
   _overlays(scene) {
