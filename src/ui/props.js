@@ -18,10 +18,10 @@ const PROPS = [
   { key: 'collide', label: 'Collisions', type: 'choice', default: 'normal',
     options: COLLIDE_MODES.map(([v, l]) => [v, l]),
     title: COLLIDE_MODES.map(([, l, tip]) => `${l}: ${tip}`).join('\n'),
-    has: (def) => !['link', 'connector', 'control', 'bolt'].includes(roleOf(def.kind)) && !isMap(def) && def.kind !== 'motor' && def.kind !== 'crank' },
+    has: (def) => !['link', 'connector', 'control', 'bolt', 'gadget'].includes(roleOf(def.kind)) && !isMap(def) && def.kind !== 'motor' && def.kind !== 'crank' },
   { key: 'anchored', label: '⚓ Anchored', type: 'toggle', default: false,
     title: 'Bolted to the background: it stays exactly where it is.',
-    has: (def) => !['link', 'control', 'bolt'].includes(roleOf(def.kind)) && !isMap(def) && def.kind !== 'fixedPin' && def.kind !== 'rotPin' },
+    has: (def) => !['link', 'control', 'bolt', 'gadget'].includes(roleOf(def.kind)) && !isMap(def) && def.kind !== 'fixedPin' && def.kind !== 'rotPin' },
   { key: 'pinEnds', label: '⚓ Anchored', type: 'toggle', default: true,
     title: 'On: an end touching nothing is pinned to the background. Off: it hangs free with a little hook.',
     has: (def) => def.kind === 'rope' || def.kind === 'spring' },
@@ -34,6 +34,16 @@ const PROPS = [
     title: 'Hold this key to turn the motor counter-clockwise (rolls a car to the LEFT).',
     value: (p) => p.props.keyCCW ?? (p.props.keys ? 'arrowleft' : 'none'),
     has: (def) => def.kind === 'motor' },
+  // Gadget keys: what "+" and "−" mean depends on the gadget.
+  { key: 'keyPlus', type: 'select', default: 'none', options: keyOptions(true),
+    label: (def) => ({ piston: '⬆ Push-out key', thruster: '🔥 Fire key', magnet: '🧲 On key', cannon: '💥 Fire key', conveyor: '→ Forward key' }[def.kind]),
+    title: 'Hold this key while playing. With no keys (and no wires) it just runs on its own.',
+    has: (def) => ['piston', 'thruster', 'magnet', 'cannon', 'conveyor'].includes(def.kind) },
+  { key: 'keyMinus', type: 'select', default: 'none', options: keyOptions(true),
+    label: (def) => ({ piston: '⬇ Pull-in key', thruster: '↩ Reverse key', conveyor: '← Backward key' }[def.kind]),
+    has: (def) => ['piston', 'thruster', 'conveyor'].includes(def.kind) },
+  { key: 'thrust', label: 'Thrust', type: 'choice', default: 'medium',
+    options: [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']], has: (def) => def.kind === 'thruster' },
   { key: 'idle', label: 'When not powered', type: 'choice', default: 'brake',
     options: [['brake', 'Brake'], ['free', 'Spin free']],
     title: 'For motors run by keys or wired controls: what happens when nothing is pressed.',
@@ -58,7 +68,7 @@ function keyOptions(withNone) {
   return [...(withNone ? [['none', '— none —']] : []), ...KEY_CHOICES.map((k) => [k, keyLabel(k)])];
 }
 
-const isMap = (def) => def.kind === 'ramp' || def.kind === 'block' || def.kind === 'track';
+const isMap = (def) => ['ramp', 'block', 'track', 'conveyor', 'bouncePad', 'water'].includes(def.kind);
 
 /**
  * Fill `root` with controls for `parts`.
@@ -108,7 +118,8 @@ export function renderProps(root, app, parts, opts = {}) {
     const same = values.every((v) => v === values[0]);
     const value = same ? values[0] : undefined;
     const set = (v) => app.setProps(owners.map((p) => p.uid), prop.key, v);
-    const label = owners.length < parts.length ? `${prop.label} <small>(${owners.length})</small>` : prop.label;
+    const base = typeof prop.label === 'function' ? prop.label(defs[parts.indexOf(owners[0])]) : prop.label;
+    const label = owners.length < parts.length ? `${base} <small>(${owners.length})</small>` : base;
     root.appendChild(control(prop, label, value, set));
   }
 }

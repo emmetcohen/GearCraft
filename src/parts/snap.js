@@ -125,7 +125,7 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
   const useGrid = opts.grid !== false;
   let out = { x, y, angle, hint: null };
 
-  if (def.kind === 'track' || def.kind === 'spring' || def.kind === 'rope') {
+  if (def.kind === 'track' || def.kind === 'spring' || def.kind === 'rope' || def.kind === 'piston' || def.kind === 'conveyor') {
     // Drawn links/track being moved: snap whichever end is closest to a target.
     let best = null;
     for (const lx of [-def.length / 2, def.length / 2]) {
@@ -145,9 +145,9 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
     return s ? { x: s.x, y: s.y, angle, hint: `bolts ${socketLabel(getDef(s.part.type), s.socket).replace('on ', 'onto ')}` } : out;
   }
 
-  if (role === 'object' || role === 'link' || role === 'control') {
-    // Loose objects go wherever you drop them (ramps snap to the grid).
-    if (useGrid && (def.kind === 'ramp' || def.kind === 'block')) {
+  if (role === 'object' || role === 'link' || role === 'control' || role === 'gadget') {
+    // Loose objects go wherever you drop them (map pieces snap to the grid).
+    if (useGrid && (def.kind === 'ramp' || def.kind === 'block' || def.kind === 'bouncePad' || def.kind === 'water')) {
       out.x = roundTo(x, GRID / 2); out.y = roundTo(y, GRID / 2);
     }
     return out;
@@ -230,16 +230,19 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
 
 // ------------------------------------------------------------ drawn parts --
 
+/** Track and conveyors: map pieces whose ends snap together. */
+const isGround = (kind) => kind === 'track' || kind === 'conveyor';
+
 /** Ends of placed track pieces (track snaps end-to-end). */
 function trackEnds(others) {
   const out = [];
-  for (const p of others) if (getDef(p.type).kind === 'track') for (const e of lineEnds(p)) out.push({ ...e, part: p });
+  for (const p of others) if (isGround(getDef(p.type).kind)) for (const e of lineEnds(p)) out.push({ ...e, part: p });
   return out;
 }
 
 /** Nearest thing the end of a drawn part of `kind` can attach to. */
 function nearestAnchor(others, kind, x, y) {
-  if (kind === 'track') {
+  if (isGround(kind)) {
     let best = null;
     for (const e of trackEnds(others)) {
       const d = Math.hypot(e.x - x, e.y - y);
@@ -269,8 +272,8 @@ export function snapEnd(parts, kind, x, y, opts = {}) {
  * @returns {{ x, y, length, hint, attached }}
  */
 export function snapDrawEnd(parts, kind, a, p, opts = {}) {
-  const step = kind === 'track' ? LENGTH_STEP / 2 : LENGTH_STEP;
-  const min = kind === 'track' ? 1 : LENGTH_STEP * 2;
+  const step = isGround(kind) ? LENGTH_STEP / 2 : LENGTH_STEP;
+  const min = isGround(kind) ? 1 : kind === 'piston' ? 1.2 : LENGTH_STEP * 2;
   // 1. Something to attach to near the pointer? Aim right at it.
   const t = nearestAnchor(parts, kind, p.x, p.y);
   if (t) {

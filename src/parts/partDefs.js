@@ -44,6 +44,7 @@ export const CATEGORIES = [
   { id: 'movers',    name: 'Wheels & Power', color: '#ff5d73', icon: '🚗' },
   { id: 'structure', name: 'Structure',      color: '#4ea8de', icon: '📏' },
   { id: 'anchors',   name: 'Anchors',        color: '#2ec4a6', icon: '📌' },
+  { id: 'gadgets',   name: 'Gadgets',        color: '#ff9e00', icon: '🚀' },
   { id: 'controls',  name: 'Controls',       color: '#ffd23f', icon: '🎛️' },
   { id: 'world',     name: 'World',          color: '#bcb8b1', icon: '⛰️' },
   { id: 'objects',   name: 'Test Objects',   color: '#a77bca', icon: '📦' },
@@ -109,6 +110,12 @@ export const PARTS = [
   { id: 'motor', name: 'Motor', category: 'movers', kind: 'motor', size: 'M',
     housing: 1.2, mass: 2.0, maxTorque: 60, rpm: 30, shape: 'motor', color: '#ef476f',
     tip: 'Drives whatever sits on its shaft. On a beam it rides along; otherwise it\'s bolted to the background. Give it keys with the Screwdriver to drive it yourself.' },
+  // A powered push-rod. Draw it like a beam (that's its short length); it
+  // pushes out to nearly twice that. Both ends pivot on what they touch;
+  // a free bottom end is fixed to the background.
+  { id: 'piston', name: 'Piston', category: 'movers', kind: 'piston', size: 'M', drawn: true,
+    length: 2.4, thickness: 0.5, massPerLength: 0.5, shape: 'piston', color: '#8338ec',
+    tip: 'Drag to draw it. It pushes out and pulls back on its own, or give it keys / wire a switch. Both ends pivot on what they touch.' },
   { id: 'crank', name: 'Hand Crank', category: 'movers', kind: 'crank', size: 'M',
     armLength: 1.0, mass: 0.5, shape: 'crank', color: '#ff70a6',
     tip: 'Human power! While playing, drag the handle around to turn it.' },
@@ -127,6 +134,9 @@ export const PARTS = [
   { id: 'hinge', name: 'Hinge', category: 'structure', kind: 'hinge', size: 'S',
     radius: 0.22, mass: 0.1, shape: 'hinge', color: '#3a86ff',
     tip: 'Lets beams on this point pivot freely instead of being bolted together.' },
+  { id: 'plate', name: 'Plate', category: 'structure', kind: 'plate', size: 'L', drawn: true,
+    length: 4.0, thickness: 1.2, massPerLength: 0.45, shape: 'plate', color: '#90e0ef',
+    tip: 'A wide, solid beam: car bodies, boat hulls, decks. Holes along the middle like a beam.' },
   { id: 'slider', name: 'Slider', category: 'structure', kind: 'slider', size: 'M', drawn: true,
     length: 3.2, thickness: 0.5, massPerLength: 0.3, shape: 'slider', color: '#7209b7',
     tip: 'A rail with a sliding block. Bolt the rail down (pins or beams on its end holes) and link the block to a crank pin for a piston.' },
@@ -146,6 +156,22 @@ export const PARTS = [
   { id: 'pin-rotating', name: 'Rotating Pin', category: 'anchors', kind: 'rotPin', size: 'S',
     radius: 0.22, mass: 0, shape: 'rotPin', color: '#2ec4a6',
     tip: 'Holds parts to the background but lets them spin.' },
+
+  // -------------------------------------------------------------- GADGETS --
+  // Orange family. Gadgets ride on the part under them (like controls) and
+  // can be run by keys or wired controls (Wrench). With neither, they just go.
+  { id: 'thruster', name: 'Thruster', category: 'gadgets', kind: 'thruster', size: 'S',
+    radius: 0.45, width: 1.0, height: 0.6, mass: 0.3, shape: 'thruster', color: '#ff9e00',
+    tip: 'A rocket: pushes the part it sits on (the way it points). Give it a key or wire a button to fire it when you want.' },
+  { id: 'magnet', name: 'Magnet', category: 'gadgets', kind: 'magnet', size: 'S',
+    radius: 0.45, mass: 0.5, shape: 'magnet', color: '#e63946',
+    tip: 'Pulls nearby crates and balls toward it. Put it on a crane arm! Give it a key or a switch to turn it on and off.' },
+  { id: 'cannon', name: 'Cannon', category: 'gadgets', kind: 'cannon', size: 'S',
+    radius: 0.5, mass: 1.0, shape: 'cannon', color: '#495057',
+    tip: 'Fires balls the way it points (with a kick back). Fires by itself, or give it a key / wire a button.' },
+  { id: 'balloon', name: 'Balloon', category: 'gadgets', kind: 'balloon', size: 'M',
+    radius: 0.7, mass: 0.2, lift: 14, shape: 'balloon', color: '#ff70a6',
+    tip: 'Floats up. Tie it to things with a Rope (draw the rope from the balloon to a part).' },
 
   // ------------------------------------------------------------- CONTROLS --
   // Yellow family. Wire them to motors with the Wrench. A control rides on
@@ -167,6 +193,15 @@ export const PARTS = [
   { id: 'track', name: 'Track', category: 'world', kind: 'track', size: 'L', drawn: true,
     length: 8.0, thickness: 0.3, mass: 0, shape: 'track', color: '#8d6e63',
     tip: 'Click and drag to lay track or a road. Ends snap together, so you can build hills and bridges.' },
+  { id: 'conveyor', name: 'Conveyor', category: 'world', kind: 'conveyor', size: 'L', drawn: true,
+    length: 6.0, thickness: 0.5, mass: 0, shape: 'conveyor', color: '#5c5470',
+    tip: 'Drag to draw a belt. It carries things along (left to right as drawn). Keys or a switch can run or reverse it.' },
+  { id: 'bounce-pad', name: 'Bounce Pad', category: 'world', kind: 'bouncePad', size: 'M',
+    width: 2.0, height: 0.5, mass: 0, shape: 'bouncePad', color: '#06d6a0',
+    tip: 'A trampoline. Things bounce off it.' },
+  { id: 'water', name: 'Water', category: 'world', kind: 'water', size: 'L',
+    width: 12, height: 3, mass: 0, shape: 'water', color: '#4cc9f0',
+    tip: 'Light things float, heavy things sink. Build a boat! Resize it with the Scale tool.' },
   { id: 'ramp-s', name: 'Ramp', category: 'world', kind: 'ramp', size: 'S',
     width: 6, height: 2, mass: 0, shape: 'ramp', color: '#bcb8b1', tip: 'Part of the map: it never moves.' },
   { id: 'ramp-l', name: 'Steep Ramp', category: 'world', kind: 'ramp', size: 'L',
@@ -259,12 +294,16 @@ export function scaleSpec(def) {
     case 'ball':     return [{ key: 'radius', min: 0.2, max: 3, step: 0.1, unit: 'm' }];
     case 'crate':    return [{ key: 'width', axis: 'x', min: 0.4, max: 8, step: 0.2, unit: 'm' },
                              { key: 'height', axis: 'y', min: 0.4, max: 8, step: 0.2, unit: 'm' }];
-    case 'block': case 'ramp':
+    case 'balloon':  return [{ key: 'radius', min: 0.3, max: 2.5, step: 0.1, unit: 'm' }];
+    case 'block': case 'ramp': case 'bouncePad': case 'water':
       return [{ key: 'width', axis: 'x', min: 0.5, max: 30, step: 0.5, unit: 'm' },
               { key: 'height', axis: 'y', min: 0.25, max: 12, step: 0.25, unit: 'm' }];
     default: return def.drawn ? [{ key: 'length', unit: 'm' }] : null;
   }
 }
+
+/** Parts the Wrench can wire controls to, and keys can run. */
+export const isActuator = (kind) => ['motor', 'piston', 'thruster', 'magnet', 'cannon', 'conveyor'].includes(kind);
 
 /** Collision modes the Screwdriver can set (props.collide). */
 export const COLLIDE_MODES = [
@@ -285,6 +324,8 @@ export const isDrawn = (def) => !!def.drawn;
  *   link      – ties other parts together without sockets (chain, spring, rope, wire)
  *   control   – switches/buttons/keys: ride on the part under them, wired to motors
  *   bolt      – locks together every part under it (no sockets needed)
+ *   piston    – a powered push-rod with a pivot at each end
+ *   gadget    – thruster/magnet/cannon: ride on the part under them
  *   object    – loose test objects (balls, crates) or map pieces (ramps)
  */
 export function roleOf(kind) {
@@ -294,6 +335,9 @@ export function roleOf(kind) {
     case 'motor': case 'crank': return 'driver';
     case 'axle': case 'hinge': case 'fixedPin': case 'rotPin': return 'connector';
     case 'chain': case 'spring': case 'rope': case 'wire': return 'link';
+    case 'plate': return 'beam';
+    case 'piston': return 'piston';
+    case 'thruster': case 'magnet': case 'cannon': return 'gadget';
     case 'switch': case 'button': case 'keyButton': return 'control';
     case 'bolt': return 'bolt';
     default: return 'object';

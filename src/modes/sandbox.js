@@ -103,6 +103,8 @@ export const sandboxMode = {
       <li><b>Beams, springs, ropes, sliders, track:</b> drag from one point to another to draw them.</li>
       <li>Gears <b>snap</b> to mesh (white dot). Drop a gear <b>between two gears</b> and it meshes with both.</li>
       <li><b>Bolt a beam onto a gear:</b> draw the beam across the gear, then press <kbd>G</kbd> (Bolt) and click where they overlap. Now they turn together. Works on wheels and crates too.</li>
+      <li><b>Gadgets:</b> a <b>Piston</b> (draw it like a beam) pushes out and back; put its top under a beam to lift it. <b>Thrusters</b>, <b>Magnets</b> and <b>Cannons</b> ride on the part you drop them on. <b>Balloons</b> float: tie them on with a rope. Give any of them keys with the Screwdriver, or wire a switch with the Wrench.</li>
+      <li><b>Water</b> (World): light things float, heavy things sink. Build a boat from <b>Plates</b> and push it with a thruster!</li>
       <li><b>Ropes &amp; springs:</b> untick <b>Anchored</b> (Screwdriver) and a loose end hangs free on a hook.</li>
       <li><b>Scale</b> a gear for more teeth, a wheel for a bigger tyre, a crate or block for a bigger box.</li>
       <li><b>Wrench:</b> click a Switch, Button or Key, then a motor. While playing, use the control to run the motor.</li>

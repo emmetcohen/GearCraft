@@ -682,5 +682,132 @@ test('bolt: a beam bolted to a crate carries it', () => {
   near(Math.hypot(t.x + 2, t.y - 3), 3.6, 0.05, 'crate swings on the beam, stuck at the same spot');
 });
 
+
+console.log('\nGadgets: piston, thruster, magnet, cannon, balloon, conveyor, bounce pad, water, plate');
+
+test('piston: on its own it pushes out and pulls back again', () => {
+  const b = emptyBuild();
+  const pis = addPart(b, 'piston', 0, 2, Math.PI / 2, { length: 2 });   // standing up, base free (fixed to ground)
+  const sim = new Simulation(b, SETTINGS, MAP);
+  let hi = -Infinity, lo = Infinity;
+  for (let t = 0; t < 3; t += DT) { sim.step(); const y = sim.transformOf(pis.uid, 'hub').y; hi = Math.max(hi, y); if (t > 1) lo = Math.min(lo, y); }
+  near(hi - 2, 1.8, 0.1, 'pushed out ~90% of its length');
+  assert(lo < 2.3, `pulled back in again (lowest after 1 s: ${lo.toFixed(2)})`);
+});
+
+test('piston: lifts a platform with keys and holds it when you let go', () => {
+  const b = emptyBuild();
+  const pis = addPart(b, 'piston', 0, 1.2, Math.PI / 2, { length: 2.4, keyPlus: 'w', keyMinus: 's' }); // (0,0) to (0,2.4)
+  const deck = addPart(b, 'beam', 0, 2.4, 0, { length: 4 });              // top pivot under the deck
+  addPart(b, 'crate', 1.2, 3.2);
+  const sim = new Simulation(b, SETTINGS, MAP);
+  assert(sim.boundKeys.has('w'), 'W bound');
+  run(sim, 0.5);
+  const y0 = sim.transformOf(deck.uid).y;
+  sim.setKeys(['w']); run(sim, 0.6);
+  sim.setKeys([]); run(sim, 0.5);
+  const y1 = sim.transformOf(deck.uid).y;
+  assert(y1 > y0 + 1, `deck rose (${y0.toFixed(2)} → ${y1.toFixed(2)})`);
+  run(sim, 1);
+  near(sim.transformOf(deck.uid).y, y1, 0.1, 'holds still with no key');
+});
+
+test('thruster: pushes a car along', () => {
+  const { b, chassis } = carBuild();
+  b.parts = b.parts.filter((p) => p.type !== 'motor');
+  addPart(b, 'thruster', 0, 1.0);                                  // on the chassis, pointing right
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 2);
+  assert(sim.transformOf(chassis.uid).x > 2, `car pushed right, x = ${sim.transformOf(chassis.uid).x.toFixed(2)}`);
+});
+
+test('magnet: pulls a crate up off the ground, off when its switch is off', () => {
+  const build = (on) => {
+    const b = emptyBuild();
+    addPart(b, 'beam', 0, 2.6, 0, { length: 4, anchored: true });
+    const m = addPart(b, 'magnet', 0, 2.6);
+    const sw = addPart(b, 'switch', 3, 5, 0, { on });
+    addPart(b, 'wire', 1, 4, 0, { a: sw.uid, b: m.uid });
+    const crate = addPart(b, 'crate', 0, 0.6);
+    const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1.5);
+    return sim.transformOf(crate.uid).y;
+  };
+  assert(build(true) > 1.2, 'switched on: crate pulled up to the magnet');
+  near(build(false), 0.6, 0.05, 'switched off: crate stays down');
+});
+
+test('cannon: fires balls by itself, and kicks back', () => {
+  const b = emptyBuild();
+  addPart(b, 'cannon', 0, 3, 0.3);                                 // on nothing: fixed to the background
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 2);
+  assert(sim.shotsNow.length >= 1, 'fired');
+  const shot = sim.shotsNow[0];
+  assert(shot.x > 3, `ball flew forward, x = ${shot.x.toFixed(2)}`);
+});
+
+test('balloon: floats up, and a rope holds it down to a crate', () => {
+  const b = emptyBuild();
+  const free = addPart(b, 'balloon', 0, 3);
+  const tied = addPart(b, 'balloon', 6, 4);
+  addPart(b, 'crate-heavy', 6, 0.8);
+  addPart(b, 'rope', 6, 2.5, -Math.PI / 2, { length: 2 });         // balloon (6,3.5) to crate top (6,1.5)
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 3);
+  assert(sim.transformOf(free.uid).y > 6, 'free balloon rises');
+  assert(sim.transformOf(tied.uid).y < 4.6, 'tied balloon held by the rope');
+});
+
+test('conveyor: carries a crate along the way it was drawn', () => {
+  const b = emptyBuild();
+  addPart(b, 'conveyor', 0, 0.25, 0, { length: 10 });
+  const crate = addPart(b, 'crate', -3, 1.1);
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1.5);
+  assert(sim.transformOf(crate.uid).x > -1, `crate moved right, x = ${sim.transformOf(crate.uid).x.toFixed(2)}`);
+  const b2 = emptyBuild();
+  addPart(b2, 'conveyor', 0, 0.25, Math.PI, { length: 10 });        // drawn right-to-left
+  const c2 = addPart(b2, 'crate', 3, 1.1);
+  const s2 = new Simulation(b2, SETTINGS, MAP); run(s2, 1.5);
+  assert(s2.transformOf(c2.uid).x < 1, `reversed belt moves it left, x = ${s2.transformOf(c2.uid).x.toFixed(2)}`);
+});
+
+test('bounce pad: a dropped ball bounces back up', () => {
+  const b = emptyBuild();
+  addPart(b, 'bounce-pad', 0, 0.25);
+  const ball = addPart(b, 'ball-s', 0, 5);
+  const sim = new Simulation(b, SETTINGS, MAP);
+  let landed = false, high = 0;
+  for (let t = 0; t < 2.5; t += DT) { sim.step(); const y = sim.transformOf(ball.uid).y; if (y < 1.2) landed = true; if (landed) high = Math.max(high, y); }
+  assert(high > 3.5, `bounced high (${high.toFixed(2)})`);
+});
+
+test('water: a plate boat floats, a heavy crate sinks', () => {
+  const b = emptyBuild();
+  addPart(b, 'water', 0, 1.5, 0, { width: 20, height: 3 });         // surface at y = 3
+  const boat = addPart(b, 'plate', -4, 4, 0, { length: 4 });
+  const crate = addPart(b, 'crate-heavy', 4, 4);
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 4);
+  const by = sim.transformOf(boat.uid).y;
+  assert(by > 2.4 && by < 3.6, `boat floats at the surface (y ${by.toFixed(2)})`);
+  near(sim.transformOf(crate.uid).y, 0.8, 0.1, 'heavy crate on the bottom');
+});
+
+test('plate: has holes like a beam and collides with the ground', () => {
+  const b = emptyBuild();
+  const pl = addPart(b, 'plate', 0, 3, 0, { length: 4 });
+  assert(socketsOf(pl).length === 11, `11 holes, got ${socketsOf(pl).length}`);
+  const sim = new Simulation(b, SETTINGS, MAP); run(sim, 1.5);
+  near(sim.transformOf(pl.uid).y, 0.6, 0.05, 'resting on the ground');
+});
+
+test('wrench: a Key control can drive a piston too', () => {
+  const b = emptyBuild();
+  const pis = addPart(b, 'piston', 0, 2, Math.PI / 2, { length: 2 });
+  const key = addPart(b, 'key-button', 3, 3, 0, { keyCCW: 'w', keyCW: 's' });
+  addPart(b, 'wire', 1, 3, 0, { a: key.uid, b: pis.uid });
+  const sim = new Simulation(b, SETTINGS, MAP);
+  run(sim, 0.5);
+  near(sim.transformOf(pis.uid, 'hub').y, 2, 0.05, 'holds until told');
+  sim.setKeys(['w']); run(sim, 0.5);
+  assert(sim.transformOf(pis.uid, 'hub').y > 2.8, 'W pushes it out');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

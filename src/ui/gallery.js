@@ -18,7 +18,9 @@ function extentOf(def) {
   if (def.drawn) return (def.length + def.thickness) / 2;
   switch (def.kind) {
     case 'beam': return (def.length + def.thickness) / 2;
-    case 'crate': case 'block': return Math.max(def.width, def.height) / 2;
+    case 'crate': case 'block': case 'bouncePad': case 'water': return Math.max(def.width, def.height) / 2;
+    case 'cannon': return 0.85;
+    case 'balloon': return def.radius * 1.5;
     case 'ramp': return Math.max(def.width, def.height) / 2;
     case 'crank': return def.armLength * 0.75;
     default: return outerRadius(def);

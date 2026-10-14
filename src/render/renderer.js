@@ -27,9 +27,14 @@ export class Camera {
   }
 }
 
+const CANNON_BALL = { kind: 'ball', radius: 0.25, color: '#343a40', category: 'objects' };
+
 /** Draw order: lower numbers are drawn first (further back). */
 function layerOf(def) {
-  if (def.kind === 'ramp' || def.kind === 'block' || def.kind === 'track') return 0;
+  if (def.kind === 'ramp' || def.kind === 'block' || def.kind === 'track' || def.kind === 'conveyor' || def.kind === 'bouncePad') return 0;
+  if (def.kind === 'water') return 8; // see-through, on top of everything
+  if (def.kind === 'piston') return 1.6;
+  if (roleOf(def.kind) === 'gadget') return 5.7;
   if (def.kind === 'chain') return 4;
   if (def.kind === 'wire') return 7;
   if (roleOf(def.kind) === 'control') return 5.8;
@@ -89,6 +94,12 @@ export class Renderer {
     for (const { p, def } of parts) drawOne(p, def, 'main');
     // Spinning hubs (motor shafts, crank handles, slider blocks) go above the rotors.
     for (const { p, def } of parts) if (hasHub(def.kind)) drawOne(p, def, 'hub');
+
+    // Cannon balls in flight.
+    for (const s of scene.shots || []) {
+      const p = camera.worldToScreen(s.x, s.y);
+      drawPart(ctx, CANNON_BALL, { sx: p.x, sy: p.y, angle: s.angle }, px, {});
+    }
 
     this._overlays(scene);
   }

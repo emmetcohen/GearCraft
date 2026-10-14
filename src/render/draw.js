@@ -489,6 +489,248 @@ const painters = {
     ctx.restore();
   },
 
+  /** Piston cylinder (the rod is the hub, drawn on top). */
+  piston(ctx, def, px, fill) {
+    const L = def.length, t = def.thickness;
+    roundRect(ctx, -L / 2 - 0.18, -t / 2, L * 0.92 + 0.18, t, 0.12);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px);
+    ctx.stroke();
+    roundRect(ctx, -L / 2, t * 0.12, L * 0.85, t * 0.16, t * 0.08);
+    ctx.fillStyle = shade(fill, 0.35);
+    ctx.fill();
+    // Bands + the bottom pivot.
+    ctx.fillStyle = shade(fill, -0.3);
+    for (const f of [0.15, 0.6]) ctx.fillRect(-L / 2 + L * f, -t / 2, 0.08, t);
+    circle(ctx, -L / 2, 0, 0.14);
+    ctx.fillStyle = '#ffe066';
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+  },
+
+  /** Piston rod: shiny shaft from the middle out to the top pivot. */
+  pistonHub(ctx, def, px) {
+    const L = def.length;
+    roundRect(ctx, 0, -0.1, L / 2, 0.2, 0.08);
+    ctx.fillStyle = '#e9ecef';
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+    roundRect(ctx, L / 2 - 0.25, -0.2, 0.42, 0.4, 0.12);
+    ctx.fillStyle = '#adb5bd';
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    circle(ctx, L / 2, 0, 0.12);
+    ctx.fillStyle = '#ffe066';
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+  },
+
+  plate(ctx, def, px, fill) {
+    const L = def.length, t = def.thickness;
+    roundRect(ctx, -L / 2 - 0.1, -t / 2, L + 0.2, t, 0.16);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px);
+    ctx.stroke();
+    roundRect(ctx, -L / 2 + 0.05, t / 2 - 0.22, L - 0.1, 0.1, 0.05);
+    ctx.fillStyle = shade(fill, 0.35);
+    ctx.fill();
+    ctx.fillStyle = shade(fill, -0.45);
+    for (const hx of beamHoleOffsets(L)) { circle(ctx, hx, 0, 0.09); ctx.fill(); }
+    ctx.fillStyle = shade(fill, -0.25); // rivets
+    for (const hx of [-L / 2 + 0.05, L / 2 - 0.05]) for (const hy of [-t / 2 + 0.18, t / 2 - 0.32]) { circle(ctx, hx, hy, 0.05); ctx.fill(); }
+  },
+
+  /** A rocket nozzle pointing +x; flames out the back when it's firing. */
+  thruster(ctx, def, px, fill, opts) {
+    const on = opts.on || 0;
+    if (on) {
+      const flick = 0.8 + 0.2 * Math.sin(performance.now() / 40);
+      const len = (0.6 + 0.5 * Math.abs(on)) * flick * Math.sign(on);
+      ctx.beginPath();
+      ctx.moveTo(-0.4, 0.22); ctx.lineTo(-0.4 - len, 0); ctx.lineTo(-0.4, -0.22); ctx.closePath();
+      ctx.fillStyle = '#ffd23f';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-0.4, 0.12); ctx.lineTo(-0.4 - len * 0.55, 0); ctx.lineTo(-0.4, -0.12); ctx.closePath();
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.moveTo(-0.45, -0.3); ctx.lineTo(-0.25, -0.18); ctx.lineTo(-0.25, 0.18); ctx.lineTo(-0.45, 0.3); ctx.closePath();
+    ctx.fillStyle = '#495057';
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+    roundRect(ctx, -0.25, -0.24, 0.6, 0.48, 0.1);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0.35, -0.24); ctx.quadraticCurveTo(0.6, 0, 0.35, 0.24); ctx.closePath();
+    ctx.fillStyle = '#ef476f';
+    ctx.fill();
+    ctx.stroke();
+  },
+
+  /** A horseshoe magnet; glowy field lines when it's on. */
+  magnet(ctx, def, px, fill, opts) {
+    if (opts.on) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(58,134,255,0.5)';
+      ctx.lineWidth = 2 / px;
+      const ph = (performance.now() / 600) % 1;
+      for (let i = 0; i < 3; i++) {
+        circle(ctx, 0, -0.1, 0.6 + ((i + ph) % 3) * 0.5);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    ctx.beginPath();
+    ctx.arc(0, 0.05, 0.36, Math.PI, 0, true);
+    ctx.lineTo(0.36, 0.35); ctx.lineTo(0.16, 0.35); ctx.lineTo(0.16, 0.05);
+    ctx.arc(0, 0.05, 0.16, 0, Math.PI, false);
+    ctx.lineTo(-0.16, 0.35); ctx.lineTo(-0.36, 0.35); ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    ctx.fillStyle = '#e9ecef';
+    ctx.fillRect(-0.36, 0.2, 0.2, 0.15);
+    ctx.fillRect(0.16, 0.2, 0.2, 0.15);
+  },
+
+  /** A cannon barrel pointing +x on a little mount; a puff after each shot. */
+  cannon(ctx, def, px, fill, opts) {
+    if (opts.on > 0.2) {
+      ctx.fillStyle = `rgba(233,236,239,${Math.min(0.9, opts.on)})`;
+      for (const [x, y, r] of [[1.0, 0.05, 0.22], [1.25, -0.1, 0.16], [1.2, 0.18, 0.14]]) { circle(ctx, x, y, r); ctx.fill(); }
+    }
+    roundRect(ctx, -0.25, -0.22, 1.0, 0.44, 0.12);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    roundRect(ctx, 0.62, -0.26, 0.16, 0.52, 0.06);
+    ctx.fillStyle = shade(fill, 0.25);
+    ctx.fill();
+    ctx.stroke();
+    circle(ctx, 0, 0, 0.3);
+    ctx.fillStyle = '#8d6e63';
+    ctx.fill();
+    ctx.stroke();
+    circle(ctx, 0, 0, 0.1);
+    ctx.fillStyle = OUTLINE;
+    ctx.fill();
+  },
+
+  balloon(ctx, def, px, fill) {
+    const r = def.radius;
+    // String hanging down.
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 1.05);
+    ctx.quadraticCurveTo(r * 0.3, -r * 1.4, 0, -r * 1.8);
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 1.5 / px;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(0, 0.05 * r, r * 0.9, r, 0, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-0.1 * r, -r * 0.93); ctx.lineTo(0.1 * r, -r * 0.93); ctx.lineTo(0, -r * 1.08); ctx.closePath();
+    ctx.fillStyle = shade(fill, -0.2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(-r * 0.35, r * 0.35, r * 0.16, r * 0.26, -0.5, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.fill();
+  },
+
+  /** A belt with chevrons that roll along when it's running. */
+  conveyor(ctx, def, px, fill, opts) {
+    const L = def.length, t = def.thickness;
+    roundRect(ctx, -L / 2, -t / 2, L, t, t / 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px);
+    ctx.stroke();
+    for (const x of [-L / 2 + t / 2, L / 2 - t / 2]) {
+      circle(ctx, x, 0, t * 0.32);
+      ctx.fillStyle = '#adb5bd';
+      ctx.fill();
+      outline(ctx, px, 1.5);
+      ctx.stroke();
+    }
+    const on = opts.on ?? 1;
+    const phase = ((performance.now() / 1000) * 3 * on) % 0.6;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-L / 2 + t, -t / 2, L - 2 * t, t);
+    ctx.clip();
+    ctx.strokeStyle = '#ffd23f';
+    ctx.lineWidth = 2.5 / px;
+    for (let x = -L / 2 + phase - 0.6; x < L / 2 + 0.6; x += 0.6) {
+      ctx.beginPath();
+      ctx.moveTo(x - 0.12, t * 0.25); ctx.lineTo(x + 0.08, 0); ctx.lineTo(x - 0.12, -t * 0.25);
+      ctx.stroke();
+    }
+    ctx.restore();
+  },
+
+  bouncePad(ctx, def, px, fill) {
+    const w = def.width, h = def.height;
+    roundRect(ctx, -w / 2, -h / 2, w, h * 0.45, 0.08);
+    ctx.fillStyle = '#5c5470';
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+    // Springs under the pad.
+    ctx.strokeStyle = '#adb5bd';
+    ctx.lineWidth = 2.5 / px;
+    for (const sx of [-w * 0.3, 0, w * 0.3]) {
+      ctx.beginPath();
+      for (let i = 0; i <= 4; i++) ctx.lineTo(sx + (i % 2 ? 0.1 : -0.1), -h / 2 + h * 0.45 + (i / 4) * h * 0.3);
+      ctx.stroke();
+    }
+    roundRect(ctx, -w / 2, h / 2 - h * 0.3, w, h * 0.3, h * 0.15);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+  },
+
+  /** Water: see-through blue with a wavy top (drawn above everything). */
+  water(ctx, def, px, fill) {
+    const w = def.width, h = def.height;
+    const ph = performance.now() / 700;
+    ctx.save();
+    ctx.globalAlpha *= 0.42;
+    ctx.beginPath();
+    ctx.moveTo(-w / 2, -h / 2);
+    ctx.lineTo(-w / 2, h / 2);
+    for (let x = -w / 2; x <= w / 2 + 1e-6; x += 0.25) ctx.lineTo(x, h / 2 + Math.sin(x * 2.2 + ph) * 0.06);
+    ctx.lineTo(w / 2, -h / 2);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.restore();
+    ctx.beginPath();
+    for (let x = -w / 2; x <= w / 2 + 1e-6; x += 0.25) ctx.lineTo(x, h / 2 + Math.sin(x * 2.2 + ph) * 0.06);
+    ctx.strokeStyle = shade(fill, 0.5);
+    ctx.lineWidth = 3 / px;
+    ctx.stroke();
+  },
+
   axle(ctx, def, px, fill) {
     circle(ctx, 0, 0, def.radius);
     ctx.fillStyle = fill;
@@ -668,7 +910,7 @@ export function drawPart(ctx, def, t, px, opts = {}) {
 }
 
 /** Does this kind have a separately-moving hub layer? */
-export const hasHub = (kind) => kind === 'motor' || kind === 'crank' || kind === 'slider';
+export const hasHub = (kind) => kind === 'motor' || kind === 'crank' || kind === 'slider' || kind === 'piston';
 
 // ------------------------------------------------------------------ chains --
 /**

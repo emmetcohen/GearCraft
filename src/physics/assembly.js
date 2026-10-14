@@ -108,18 +108,20 @@ export function buildAssembly(parts) {
     const def = getDef(part.type);
     if (roleOf(def.kind) === 'link') continue; // chains/springs/ropes aren't bodies
     addElement(mainKey(part.uid), part.uid, 'main');
-    if (def.kind === 'motor' || def.kind === 'crank' || def.kind === 'slider') addElement(hubKey(part.uid), part.uid, 'hub');
+    if (def.kind === 'motor' || def.kind === 'crank' || def.kind === 'slider' || def.kind === 'piston') addElement(hubKey(part.uid), part.uid, 'hub');
     // Map pieces (ramps, blocks, track) and pins are part of the static background.
     if (def.kind === 'ramp' || def.kind === 'block' || def.kind === 'track' ||
+        def.kind === 'conveyor' || def.kind === 'bouncePad' || def.kind === 'water' ||
         def.kind === 'fixedPin' || def.kind === 'rotPin' || part.props?.anchored) {
       uf.union(WORLD, mainKey(part.uid));
     }
   }
 
   // Controls ride on whatever solid part is under them.
-  const solid = parts.filter((p) => { const r = roleOf(getDef(p.type).kind); return r !== 'link' && r !== 'control' && r !== 'bolt'; });
+  const solid = parts.filter((p) => { const r = roleOf(getDef(p.type).kind); return r !== 'link' && r !== 'control' && r !== 'bolt' && r !== 'gadget' && getDef(p.type).kind !== 'water'; });
   for (const part of parts) {
-    if (roleOf(getDef(part.type).kind) !== 'control') continue;
+    const r = roleOf(getDef(part.type).kind);
+    if (r !== 'control' && r !== 'gadget') continue;
     const under = pickPart(solid, part.x, part.y);
     uf.union(under ? mainKey(under.uid) : WORLD, mainKey(part.uid));
   }
@@ -244,7 +246,15 @@ export function buildAssembly(parts) {
 
   // Sliders: the rail is bolted to the background unless something holds
   // one of its end holes; the block slides along the rail.
+  // Pistons: the rod slides out of the cylinder; a free bottom end is fixed
+  // to the background.
   const pendingPrismatics = [];
+  for (const part of parts) {
+    if (getDef(part.type).kind !== 'piston') continue;
+    const base = clusters.find((cl) => cl.pivots.some((pv) => pv.uid === part.uid && pv.sub === 'main'));
+    if (base && base.uids.length === 0 && base.pivots.length === 1) weld(WORLD, mainKey(part.uid));
+    pendingPrismatics.push([mainKey(part.uid), hubKey(part.uid), part.uid, true]);
+  }
   for (const part of parts) {
     if (getDef(part.type).kind !== 'slider') continue;
     const held = clusters.some((cl) => cl.uids.length > 1 && cl.uids.includes(part.uid));
@@ -268,6 +278,7 @@ export function buildAssembly(parts) {
   for (const [ka, kb, cl, driverUid, pivot = false] of pendingRevolutes) {
     let a = bodyOf(ka), b = bodyOf(kb);
     if (a === b) {
+      if (pivot) continue; // e.g. a piston end bolted to what it's on: just rigid
       warnings.push(`Parts at (${cl.x.toFixed(1)}, ${cl.y.toFixed(1)}) are locked together, so that joint can't turn.`);
       continue;
     }
@@ -278,9 +289,9 @@ export function buildAssembly(parts) {
     revolutes.push({ id: revolutes.length, a, b, x: cl.x, y: cl.y, driverUid, pivot, cluster: cl.index });
   }
   const prismatics = [];
-  for (const [ka, kb, uid] of pendingPrismatics) {
+  for (const [ka, kb, uid, piston = false] of pendingPrismatics) {
     const a = bodyOf(ka), b = bodyOf(kb);
-    if (a !== b && b !== WORLD) prismatics.push({ a, b, uid });
+    if (a !== b && b !== WORLD) prismatics.push({ a, b, uid, piston });
   }
 
   // Joint markers for edit mode: what happens at each shared point?

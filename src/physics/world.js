@@ -16,7 +16,7 @@
 // down or stalls. Nothing ever breaks.
 // =============================================================================
 import * as planck from '../../lib/planck.mjs';
-import { getDef, partDef, gearLayers, roleOf } from '../parts/partDefs.js';
+import { getDef, partDef, gearLayers, roleOf, isActuator } from '../parts/partDefs.js';
 import { socketsOf, lineEnds } from '../parts/geometry.js';
 import { buildAssembly, WORLD, mainKey, hubKey, CLUSTER_TOL } from './assembly.js';
 import { solveGearTrain } from './gearTrain.js';
@@ -53,6 +53,21 @@ export const CRANK_TORQUE = 40;
 const JAM_TORQUE = 1e6;
 /** Spring stiffness presets (oscillation frequency in Hz: higher = stiffer). */
 export const SPRING_HZ = { soft: 1.8, medium: 3.5, stiff: 7 };
+
+/** Gadget tuning. */
+export const PISTON_SPEED = 2.5;         // m/s
+export const PISTON_FORCE_PER_TORQUE = 6; // piston force (N) per N·m of the motor-power slider
+export const THRUST = { low: 15, medium: 35, high: 90 }; // N
+export const MAGNET_RANGE = 4.5;         // m
+export const CANNON_SPEED = 16;          // m/s
+export const CONVEYOR_SPEED = 3;         // m/s
+export const WATER_DENSITY = 1.5;        // kg/m² (2D): lighter parts float
+const MAX_SHOTS = 40;
+
+/** A gadget's keys: { plus, minus } ('none' = unused). */
+export function gadgetKeys(part) {
+  return { plus: part.props.keyPlus ?? 'none', minus: part.props.keyMinus ?? 'none' };
+}
 
 /** A motor's own keys: { cw, ccw } or null. (Old saves: keys:true = the arrows.) */
 export function motorKeys(part) {
@@ -95,7 +110,11 @@ export class Simulation {
     this.links = new Map();       // spring/rope uid -> { bodyA, la, bodyB, lb, joint }
     this.held = new Set();        // keyboard keys held down (lower-case names)
     this.signals = new Map();     // control uid -> on (switch/button: bool; key: -1/0/+1)
-    this.wires = new Map();       // motor uid -> [control uids wired to it]
+    this.wires = new Map();       // motor/gadget uid -> [control uids wired to it]
+    this.pistons = new Map();     // piston uid -> { joint, stroke, dir }
+    this.conveyors = new Map();   // fixture -> conveyor part
+    this.shots = [];              // cannon balls in flight: { body, age }
+    this.gadgetState = new Map(); // gadget uid -> { on, cool, prev }
 
     this._createBodies(map);
     this._createRevolutes();
@@ -103,6 +122,7 @@ export class Simulation {
     this._createGearJoints();
     this._createLinks();
     this._createWires();
+    this.world.on('pre-solve', (contact) => this._conveyorContact(contact));
     this.applySettings(settings);
 
     this.grab = null;        // mouse joint on a loose body
@@ -198,6 +218,38 @@ export class Simulation {
       case 'axle': case 'hinge': case 'bolt':
         add(Circle(c, 0.16), 0.08, { cat: CAT.MACHINE, sensor: true, density: 1 });
         break;
+      case 'piston': {
+        const L = def.length;
+        if (sub === 'hub') {
+          // The rod: from the middle of the cylinder out to the top end.
+          add(Box(L / 4 + 0.1, 0.1, at(L / 4, 0), a), (L / 2) * 0.2, { cat: CAT.MACHINE, friction: 0.5 });
+        } else {
+          add(Box(L / 2, def.thickness / 2, c, a), L * def.thickness, { cat: CAT.MACHINE, friction: 0.5 });
+        }
+        break;
+      }
+      case 'plate': {
+        const hx = def.length / 2 + 0.1, hy = def.thickness / 2;
+        add(Box(hx, hy, c, a), 4 * hx * hy, { cat: CAT.MACHINE, friction: 0.7 });
+        break;
+      }
+      case 'thruster': case 'magnet': case 'cannon':
+        add(Circle(c, def.radius * 0.9), Math.PI * (def.radius * 0.9) ** 2, { cat: CAT.MACHINE, sensor: true });
+        break;
+      case 'balloon':
+        add(Circle(c, def.radius), Math.PI * def.radius ** 2, { cat: CAT.OBJECT, friction: 0.3, restitution: 0.4 });
+        body.setLinearDamping(0.8); // air drag: it floats up gently
+        body.setAngularDamping(1);
+        break;
+      case 'conveyor': {
+        const f = this._addFixture(body, Box(def.length / 2, def.thickness / 2, c, a), { cat: CAT.GROUND, friction: 1.2 });
+        this.conveyors.set(f, part);
+        break;
+      }
+      case 'bouncePad':
+        this._addFixture(body, Box(def.width / 2, def.height / 2, c, a), { cat: CAT.GROUND, friction: 0.6, restitution: 1 });
+        break;
+      case 'water': break; // no shape: buoyancy is worked out each step
       case 'switch': case 'button': case 'keyButton':
         add(Circle(c, def.radius), Math.PI * def.radius ** 2, { cat: CAT.MACHINE, sensor: true });
         break;
@@ -258,6 +310,17 @@ export class Simulation {
       const part = this.byUid.get(pr.uid);
       const def = partDef(part);
       const axis = Vec2(Math.cos(part.angle), Math.sin(part.angle));
+      if (pr.piston) {
+        // The rod pushes out from fully in (0) to nearly the cylinder's length.
+        const stroke = def.length * 0.9;
+        const joint = this.world.createJoint(PrismaticJoint({
+          enableLimit: true, lowerTranslation: 0, upperTranslation: stroke,
+          enableMotor: true, maxMotorForce: 0, motorSpeed: 0,
+        }, this.bodies.get(pr.a), this.bodies.get(pr.b), Vec2(part.x, part.y), axis));
+        this.pistons.set(pr.uid, { joint, stroke, dir: 1, part });
+        this.bodies.get(pr.b).setSleepingAllowed(false);
+        continue;
+      }
       const half = def.length / 2 - 0.36;
       this.world.createJoint(PrismaticJoint({
         enableLimit: true, lowerTranslation: -half, upperTranslation: half,
@@ -331,7 +394,7 @@ export class Simulation {
       const a = this.byUid.get(part.props.a), b = this.byUid.get(part.props.b);
       if (!a || !b) continue;
       const [ctl, motor] = roleOf(getDef(a.type).kind) === 'control' ? [a, b] : [b, a];
-      if (getDef(motor.type).kind !== 'motor') continue;
+      if (!isActuator(getDef(motor.type).kind) || roleOf(getDef(ctl.type).kind) !== 'control') continue;
       if (!this.wires.has(motor.uid)) this.wires.set(motor.uid, []);
       this.wires.get(motor.uid).push(ctl.uid);
     }
@@ -384,6 +447,7 @@ export class Simulation {
         else { const k = keyControlKeys(p); out.add(k.cw); out.add(k.ccw); }
       }
       if (kind === 'motor') { const k = motorKeys(p); if (k) { out.add(k.cw); out.add(k.ccw); } }
+      if (isActuator(kind) && kind !== 'motor') { const k = gadgetKeys(p); out.add(k.plus); out.add(k.minus); }
     }
     out.delete('none');
     return out;
@@ -564,6 +628,7 @@ export class Simulation {
   // ----------------------------------------------------------------- step --
   step(dt = DT) {
     this._updateCranks();
+    this._updateGadgets(dt);
     this.world.step(dt, VEL_ITERS, POS_ITERS);
     this.time += dt;
     this._updateTelemetry(dt);
@@ -602,6 +667,189 @@ export class Simulation {
       t.load = t.jammed ? 1 : active && t.maxTorque > 0 ? Math.min(1, t.torque / t.maxTorque) : 0;
       t.stalled = t.jammed || (d.kind === 'motor' && Math.abs(t.commanded) > 0.05 &&
         t.load > 0.9 && Math.abs(t.speed) < 0.25 * Math.abs(t.commanded));
+    }
+  }
+
+  // -------------------------------------------------------------- gadgets --
+  /**
+   * What a gadget is told to do: null = nobody's controlling it (it does its
+   * default thing), otherwise -1..1 from its keys and wired controls.
+   */
+  _command(part) {
+    const k = gadgetKeys(part);
+    const ctls = this.wires.get(part.uid);
+    if (k.plus === 'none' && k.minus === 'none' && !ctls) return null;
+    let v = (this.held.has(k.plus) ? 1 : 0) - (this.held.has(k.minus) ? 1 : 0);
+    for (const uid of ctls || []) {
+      const ctl = this.byUid.get(uid);
+      const s = this.signals.get(uid);
+      if (getDef(ctl.type).kind === 'keyButton' && !isLegacyKey(ctl)) v += s;
+      else if (s) v += (ctl.props.reverse ? -1 : 1) * Number(s);
+    }
+    return Math.max(-1, Math.min(1, v));
+  }
+
+  /** Is this gadget working right now? (for drawing flames, glow, belts) */
+  gadgetOn(uid) { return this.gadgetState.get(uid)?.on ?? 0; }
+
+  _updateGadgets(dt) {
+    const g = this.settings.gravity;
+    for (const part of this.parts) {
+      const kind = getDef(part.type).kind;
+      switch (kind) {
+        case 'piston': this._piston(part); break;
+        case 'thruster': case 'magnet': case 'cannon': this._gadget(part, kind, dt); break;
+        case 'conveyor': {
+          const cmd = this._command(part);
+          this.gadgetState.set(part.uid, { on: cmd == null ? 1 : cmd });
+          break;
+        }
+        case 'balloon': {
+          const t = this.elements.get(mainKey(part.uid));
+          if (t && t.body !== this.ground) t.body.applyForceToCenter(Vec2(0, partDef(part).lift * (partDef(part).radius / 0.7) ** 2 * (g / 10)), true);
+          break;
+        }
+        default: break;
+      }
+    }
+    this._buoyancy();
+    // Old cannon balls disappear.
+    for (const s of this.shots) s.age += dt;
+    while (this.shots.length && (this.shots.length > MAX_SHOTS || this.shots[0].age > 12)) {
+      this.world.destroyBody(this.shots.shift().body);
+    }
+  }
+
+  _piston(part) {
+    const p = this.pistons.get(part.uid);
+    if (!p) return;
+    const cmd = this._command(part);
+    let v;
+    if (cmd == null) {
+      // Nobody's controlling it: push out, pull back, repeat.
+      const x = p.joint.getJointTranslation();
+      if (x >= p.stroke - 0.03) p.dir = -1;
+      if (x <= 0.03) p.dir = 1;
+      v = p.dir;
+    } else v = cmd; // 0 = hold where it is
+    p.joint.setMotorSpeed(v * PISTON_SPEED);
+    p.joint.setMaxMotorForce(this.settings.motorTorque * PISTON_FORCE_PER_TORQUE);
+    this.gadgetState.set(part.uid, { on: v });
+  }
+
+  _gadget(part, kind, dt) {
+    const el = this.elements.get(mainKey(part.uid));
+    if (!el) return;
+    const t = this.transformOf(part.uid);
+    const dir = Vec2(Math.cos(t.angle), Math.sin(t.angle));
+    const body = el.body;
+    const cmd = this._command(part);
+    const st = this.gadgetState.get(part.uid) ?? { on: 0, cool: 0.4 };
+    st.cool -= dt;
+    if (kind === 'thruster') {
+      st.on = cmd == null ? 1 : cmd;
+      if (st.on && body.isDynamic()) {
+        const F = (THRUST[part.props.thrust] ?? THRUST.medium) * st.on;
+        body.applyForce(Vec2(dir.x * F, dir.y * F), Vec2(t.x, t.y), true);
+      }
+    } else if (kind === 'magnet') {
+      st.on = cmd == null ? 1 : cmd > 0 ? 1 : 0;
+      if (st.on) this._magnet(t, body);
+    } else if (kind === 'cannon') {
+      // Uncontrolled: fires every 1.5 s. Controlled: on press, then every 0.5 s while held.
+      // (The cooldown keeps running while idle, so a fresh press fires at once.)
+      const firing = cmd == null || cmd > 0;
+      if (firing && st.cool <= 0) {
+        this._fire(t, dir, body);
+        st.cool = cmd == null ? 1.5 : 0.5;
+      }
+      st.on = Math.max(0, st.cool - (cmd == null ? 1 : 0)) / 0.5; // a puff of smoke just after a shot
+    }
+    this.gadgetState.set(part.uid, st);
+  }
+
+  /** Pull loose objects (crates, balls, hooks, cannon balls) toward the magnet. */
+  _magnet(t, magnetBody) {
+    for (let b = this.world.getBodyList(); b; b = b.getNext()) {
+      if (!b.isDynamic() || b === magnetBody) continue;
+      let loose = false;
+      for (let f = b.getFixtureList(); f; f = f.getNext()) if (f.getFilterCategoryBits() === CAT.OBJECT) loose = true;
+      if (!loose) continue;
+      const c = b.getWorldCenter();
+      const dx = t.x - c.x, dy = t.y - c.y, d = Math.hypot(dx, dy);
+      if (d > MAGNET_RANGE || d < 1e-3) continue;
+      // An acceleration (so heavy and light things both come): beats gravity
+      // within about 2 m, fades out by MAGNET_RANGE.
+      const a = Math.min(50, 60 / (d * d + 1));
+      const F = Vec2((dx / d) * a * b.getMass(), (dy / d) * a * b.getMass());
+      b.applyForceToCenter(F, true);
+      if (magnetBody.isDynamic()) magnetBody.applyForce(Vec2(-F.x, -F.y), Vec2(t.x, t.y), true);
+    }
+  }
+
+  /** Shoot a cannon ball, with a kick back on the cannon. */
+  _fire(t, dir, body) {
+    const r = 0.25, m = 0.6;
+    const ball = this.world.createBody({ type: 'dynamic', position: Vec2(t.x + dir.x * 0.75, t.y + dir.y * 0.75), bullet: true });
+    this._addFixture(ball, Circle(Vec2(0, 0), r), { density: m / (Math.PI * r * r), friction: 0.5, restitution: 0.3, cat: CAT.OBJECT });
+    const v0 = body.getLinearVelocityFromWorldPoint(Vec2(t.x, t.y));
+    ball.setLinearVelocity(Vec2(v0.x + dir.x * CANNON_SPEED, v0.y + dir.y * CANNON_SPEED));
+    if (body.isDynamic()) body.applyLinearImpulse(Vec2(-dir.x * m * CANNON_SPEED, -dir.y * m * CANNON_SPEED), Vec2(t.x, t.y), true);
+    this.shots.push({ body: ball, age: 0 });
+  }
+
+  /** Cannon balls in flight, for drawing: [{ x, y, angle, r }]. */
+  get shotsNow() {
+    return this.shots.map((s) => { const p = s.body.getPosition(); return { x: p.x, y: p.y, angle: s.body.getAngle(), r: 0.25 }; });
+  }
+
+  /** Conveyor belts drag whatever touches them along the belt. */
+  _conveyorContact(contact) {
+    const fa = contact.getFixtureA(), fb = contact.getFixtureB();
+    const belt = this.conveyors.get(fa) || this.conveyors.get(fb);
+    if (!belt) return;
+    const on = this.gadgetState.get(belt.uid)?.on ?? 1;
+    // Tangent speed is measured along the contact normal's tangent, which
+    // points from A to B: flip it when the belt is fixture B.
+    const n = contact.getWorldManifold(null)?.normal;
+    if (!n) return;
+    const along = Vec2(Math.cos(belt.angle), Math.sin(belt.angle));
+    const tangent = Vec2(n.y, -n.x); // Box2D's tangent = cross(normal, 1)
+    const sign = (tangent.x * along.x + tangent.y * along.y) >= 0 ? 1 : -1;
+    contact.setTangentSpeed(sign * on * CONVEYOR_SPEED * (this.conveyors.get(fa) ? 1 : -1));
+  }
+
+  /** Water: push up anything under the surface (by how much is under) and slow it down. */
+  _buoyancy() {
+    const pools = this.parts.filter((p) => getDef(p.type).kind === 'water').map((p) => {
+      const d = partDef(p);
+      return { x0: p.x - d.width / 2, x1: p.x + d.width / 2, y0: p.y - d.height / 2, y1: p.y + d.height / 2 };
+    });
+    if (!pools.length) return;
+    const g = this.settings.gravity;
+    for (let b = this.world.getBodyList(); b; b = b.getNext()) {
+      if (!b.isDynamic()) continue;
+      for (let f = b.getFixtureList(); f; f = f.getNext()) {
+        if (f.isSensor()) continue;
+        const bb = f.getAABB(0);
+        const fx0 = bb.lowerBound.x, fy0 = bb.lowerBound.y, fx1 = bb.upperBound.x, fy1 = bb.upperBound.y;
+        const boxArea = (fx1 - fx0) * (fy1 - fy0);
+        if (boxArea <= 0) continue;
+        const md = { mass: 0, center: Vec2(0, 0), I: 0 };
+        f.getMassData(md);
+        const area = f.getDensity() > 0 ? md.mass / f.getDensity() : boxArea * 0.7;
+        for (const w of pools) {
+          const ox = Math.min(fx1, w.x1) - Math.max(fx0, w.x0);
+          const oy = Math.min(fy1, w.y1) - Math.max(fy0, w.y0);
+          if (ox <= 0 || oy <= 0) continue;
+          const sub = area * (ox * oy) / boxArea;          // area under water
+          const cx = Math.max(fx0, w.x0) + ox / 2, cy = Math.max(fy0, w.y0) + oy / 2;
+          const pt = Vec2(cx, cy);
+          b.applyForce(Vec2(0, WATER_DENSITY * g * sub), pt, true);
+          const v = b.getLinearVelocityFromWorldPoint(pt);
+          b.applyForce(Vec2(-v.x * sub * 2.5, -v.y * sub * 2.5), pt, true); // water drag
+        }
+      }
     }
   }
 

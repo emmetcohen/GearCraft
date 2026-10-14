@@ -14,7 +14,7 @@
 // The GAME MODE (src/modes/*) decides the map, default settings, which parts
 // are allowed and which controls appear. App itself is mode-agnostic.
 // =============================================================================
-import { getDef, partDef, roleOf, chainTeeth, chainRadius, scaleSpec, pitchRadius, HOLE_SPACING } from './parts/partDefs.js';
+import { getDef, partDef, roleOf, chainTeeth, chainRadius, scaleSpec, pitchRadius, isActuator, HOLE_SPACING } from './parts/partDefs.js';
 import { pickPart, partsAt, socketsOf, outerRadius, lineEnds, lineFrom, boundsOf, worldToLocal, localToWorld } from './parts/geometry.js';
 import { snapPart, snapEnd, snapDrawEnd, GRID } from './parts/snap.js';
 import { emptyBuild, cloneBuild, addPart, findPart, removePart } from './core/build.js';
@@ -456,6 +456,11 @@ export class App {
           if (pair.cw !== 'none') hints.add(`${keyLabel(pair.cw)} ↻`);
           if (pair.ccw !== 'none') hints.add(`${keyLabel(pair.ccw)} ↺`);
         } else if (k === 'keyButton') hints.add(keyLabel(p.props.key));
+        else if (isActuator(k)) {
+          const name = getDef(p.type).name;
+          if ((p.props.keyPlus ?? 'none') !== 'none') hints.add(`${keyLabel(p.props.keyPlus)} ${name}`);
+          if ((p.props.keyMinus ?? 'none') !== 'none') hints.add(`${keyLabel(p.props.keyMinus)} ${name} back`);
+        }
       }
       if (hints.size) this.toast(`🎮 Keys: ${[...hints].join(' · ')}`, 3500);
       else if (this.sim.signals.size) this.toast('🎛️ Click switches and hold buttons to run your motors', 3500);
@@ -659,7 +664,8 @@ export class App {
       parts, mode: editing ? 'edit' : 'play', map: this.mode.map, grid: this.options.grid,
       transformOf: (uid, layer) => this.transformOf(uid, layer),
       linkEndsOf: (uid) => (this.sim ? this.sim.linkEnds(uid) : null),
-      signalOf: (uid) => this.sim?.signals.get(uid) ?? (editing ? !!findPart(this.build, uid)?.props.on : false),
+      signalOf: (uid) => (this.sim ? this.sim.signals.get(uid) ?? this.sim.gadgetOn(uid) : !!findPart(this.build, uid)?.props.on),
+      shots: this.sim?.shotsNow,
       loadOf: (uid) => (this.options.loadView && this.sim ? this.sim.loadOf(uid) : null),
       loadView: this.options.loadView && !!this.sim, // load colours only mean something while running
       squashOf: (uid) => {
@@ -1220,22 +1226,22 @@ export class App {
   /** Wrench: click a control, then a motor (either order). */
   _wireClick(hit) {
     const k = hit && kindOf(hit);
-    const ok = hit && (roleOf(k) === 'control' || k === 'motor');
+    const ok = hit && (roleOf(k) === 'control' || isActuator(k));
     if (!ok) {
       if (hit && k === 'wire') { this.select(hit.uid); this.toast('Wire selected: press Delete to cut it', 1600); return; }
       if (this.wirePick != null) { this.wirePick = null; this.toast('Wire cancelled'); }
-      else this.toast('Click a Switch, Button or Key, then a motor (or the other way round)');
+      else this.toast('Click a Switch, Button or Key, then a motor, piston, thruster, magnet, cannon or conveyor');
       return;
     }
     if (this.wirePick == null || this.wirePick === hit.uid) {
       this.wirePick = hit.uid;
-      this.toast(roleOf(k) === 'control' ? 'Now click the motor it should control' : 'Now click the Switch, Button or Key that controls it');
+      this.toast(roleOf(k) === 'control' ? 'Now click what it should control (motor, piston, thruster...)' : 'Now click the Switch, Button or Key that controls it');
       return;
     }
     const first = findPart(this.build, this.wirePick);
     const kinds = [roleOf(kindOf(first)) === 'control', roleOf(k) === 'control'];
     if (kinds[0] === kinds[1]) {
-      this.toast(kinds[0] ? 'Wire a control to a MOTOR' : 'Wire a motor to a Switch, Button or Key');
+      this.toast(kinds[0] ? 'Wire a control to a motor, piston or gadget' : 'Wire it to a Switch, Button or Key');
       this.wirePick = hit.uid;
       return;
     }
@@ -1274,7 +1280,7 @@ export class App {
     const hit = this._pick(w);
     const tool = this.tool;
     const k = hit && kindOf(hit);
-    if (tool === 'wire') this.hoverUid = hit && (roleOf(k) === 'control' || k === 'motor' || k === 'wire') ? hit.uid : null;
+    if (tool === 'wire') this.hoverUid = hit && (roleOf(k) === 'control' || isActuator(k) || k === 'wire') ? hit.uid : null;
     else this.hoverUid = hit?.uid ?? null;
     const h = (tool === 'move' || tool === 'scale') && this._handleAt(this._screenAt(e));
     const cursor = {

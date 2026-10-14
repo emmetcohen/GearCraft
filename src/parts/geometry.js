@@ -41,7 +41,7 @@ export function beamHoleOffsets(length) {
 /** Local x-positions of a beam-like part's holes (sliders only have end holes). */
 export function holesOf(def) {
   if (def.kind === 'slider') return [-def.length / 2, def.length / 2];
-  if (def.kind === 'beam') return beamHoleOffsets(def.length);
+  if (def.kind === 'beam' || def.kind === 'plate') return beamHoleOffsets(def.length);
   return [];
 }
 
@@ -72,7 +72,15 @@ export function lineFrom(a, b) {
 export function socketsOf(part) {
   const def = partDef(part);
   const role = roleOf(def.kind);
-  if (role === 'object' || role === 'link' || role === 'control' || role === 'bolt') return [];
+  if (role === 'object' || role === 'link' || role === 'control' || role === 'bolt' || role === 'gadget') return [];
+  if (role === 'piston') {
+    // A pivot at each end: the bottom on the cylinder, the top on the rod.
+    const h = def.length / 2;
+    return [
+      { ...localToWorld(part.x, part.y, part.angle, -h, 0), index: 0, sub: 'main', pivot: true },
+      { ...localToWorld(part.x, part.y, part.angle, h, 0), index: 1, sub: 'hub', pivot: true },
+    ];
+  }
   if (role === 'beam') {
     const out = holesOf(def).map((lx, index) => ({
       ...localToWorld(part.x, part.y, part.angle, lx, 0), index, sub: 'main', pivot: false,
@@ -149,7 +157,9 @@ export function hitTest(part, wx, wy) {
  *  clicking a pin on a gear selects the pin. Higher = picked first. */
 export function pickPriority(def) {
   if (def.kind === 'spring' || def.kind === 'rope') return 3.5;
-  if (roleOf(def.kind) === 'control' || roleOf(def.kind) === 'bolt') return 5;
+  if (roleOf(def.kind) === 'control' || roleOf(def.kind) === 'bolt' || roleOf(def.kind) === 'gadget') return 5;
+  if (def.kind === 'piston') return 1.5;
+  if (def.kind === 'water' || def.kind === 'conveyor' || def.kind === 'bouncePad') return 0;
   if (def.kind === 'track') return 0;
   switch (roleOf(def.kind)) {
     case 'connector': return 4;
