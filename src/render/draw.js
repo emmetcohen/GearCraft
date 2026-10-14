@@ -9,7 +9,7 @@
 // The same functions draw the gallery thumbnails and the world, so a part
 // always looks the same everywhere.
 // =============================================================================
-import { MODULE, OUTLINE, gearLayers, faceHoles, pistonMount } from '../parts/partDefs.js';
+import { MODULE, OUTLINE, gearLayers, faceHoles, pistonMount, pistonExt } from '../parts/partDefs.js';
 import { beamHoleOffsets } from '../parts/geometry.js';
 
 // ---------------------------------------------------------------- colours --
@@ -152,7 +152,8 @@ export function ropeStroke(ctx, px, fill, trace) {
 
 /** Short label for a key name: 'arrowleft' → '←', 'w' → 'W'. */
 export function keyLabel(key) {
-  return { arrowleft: '←', arrowright: '→', arrowup: '↑', arrowdown: '↓', shift: '⇧' }[key] ?? key.toUpperCase();
+  return { arrowleft: '←', arrowright: '→', arrowup: '↑', arrowdown: '↓', shift: '⇧', enter: '⏎', tab: '⇥',
+    control: 'Ctrl', alt: 'Alt', meta: '⌘', capslock: '⇪' }[key] ?? key.toUpperCase();
 }
 
 // ------------------------------------------------------------ part shapes --
@@ -489,7 +490,7 @@ const painters = {
     ctx.restore();
   },
 
-  /** Piston cylinder (the rod is the hub, drawn on top). */
+  /** Piston cylinder (the rod is the hub, drawn underneath so it slides out of it). */
   piston(ctx, def, px, fill) {
     const L = def.length, t = def.thickness;
     roundRect(ctx, -L / 2 - 0.18, -t / 2, L * 0.92 + 0.18, t, 0.12);
@@ -513,10 +514,13 @@ const painters = {
     }
   },
 
-  /** Piston rod: shiny shaft from the middle out to the top pivot. */
-  pistonHub(ctx, def, px) {
-    const L = def.length;
-    roundRect(ctx, 0, -0.1, L / 2, 0.2, 0.08);
+  /** Piston rod: a shiny shaft from deep inside the cylinder out to the top
+   *  pivot (the rod may start pushed out). */
+  pistonHub(ctx, def, px, fill, opts = {}) {
+    const L = def.length, e = pistonExt({ props: opts.props }, def);
+    ctx.save();
+    ctx.translate(e, 0);
+    roundRect(ctx, -L / 2 + 0.1, -0.1, L - 0.1, 0.2, 0.08);
     ctx.fillStyle = '#e9ecef';
     ctx.fill();
     outline(ctx, px, 2);
@@ -530,6 +534,148 @@ const painters = {
     ctx.fillStyle = '#ffe066';
     ctx.fill();
     outline(ctx, px, 2);
+    ctx.stroke();
+    ctx.restore();
+  },
+
+  /** Trap door flap: wooden planks with a metal strap at the hinge end. */
+  trapdoor(ctx, def, px, fill) {
+    const L = def.length, t = def.thickness;
+    roundRect(ctx, -L / 2, -t / 2, L, t, 0.07);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px);
+    ctx.stroke();
+    ctx.strokeStyle = shade(fill, -0.3);
+    ctx.lineWidth = 1.5 / px;
+    for (let x = -L / 2 + 0.6; x < L / 2 - 0.1; x += 0.6) {
+      ctx.beginPath(); ctx.moveTo(x, -t / 2 + 0.04); ctx.lineTo(x, t / 2 - 0.04); ctx.stroke();
+    }
+    // Hazard stripes at the free end.
+    ctx.save();
+    roundRect(ctx, L / 2 - 0.5, -t / 2, 0.5, t, 0.07);
+    ctx.clip();
+    ctx.fillStyle = '#ffd23f';
+    ctx.fillRect(L / 2 - 0.5, -t / 2, 0.5, t);
+    ctx.fillStyle = OUTLINE;
+    for (let x = L / 2 - 0.7; x < L / 2 + 0.2; x += 0.2) {
+      ctx.beginPath();
+      ctx.moveTo(x, -t / 2); ctx.lineTo(x + 0.1, -t / 2); ctx.lineTo(x + 0.1 + t, t / 2); ctx.lineTo(x + t, t / 2); ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+    roundRect(ctx, -L / 2 + 0.05, -t / 2 - 0.03, 0.7, t + 0.06, 0.05);
+    ctx.fillStyle = '#adb5bd';
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+  },
+
+  /** Trap door hinge: a metal knuckle the flap swings on. */
+  trapdoorHub(ctx, def, px) {
+    const x = -def.length / 2;
+    circle(ctx, x, 0, 0.22);
+    ctx.fillStyle = '#6c757d';
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    circle(ctx, x, 0, 0.1);
+    ctx.fillStyle = '#ffe066';
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+  },
+
+  /** A latch: a clasp that's shut (red) or open (green, shackle up). */
+  latch(ctx, def, px, fill, opts) {
+    const open = !!opts.on;
+    ctx.beginPath();
+    const lift = open ? 0.12 : 0;
+    ctx.arc(0, 0.06 + lift, 0.14, Math.PI, 0, true);
+    ctx.lineWidth = 0.08;
+    ctx.strokeStyle = OUTLINE;
+    ctx.stroke();
+    ctx.lineWidth = 0.045;
+    ctx.strokeStyle = '#dee2e6';
+    ctx.stroke();
+    roundRect(ctx, -0.22, -0.2, 0.44, 0.3, 0.07);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    circle(ctx, 0, -0.05, 0.07);
+    ctx.fillStyle = open ? '#06d6a0' : '#ef476f';
+    ctx.fill();
+  },
+
+  /** A cartoon bomb with a fizzing fuse. */
+  bomb(ctx, def, px, fill) {
+    const r = def.radius;
+    ctx.beginPath();
+    ctx.moveTo(r * 0.45, r * 0.85);
+    ctx.quadraticCurveTo(r * 0.9, r * 1.5, r * 1.15, r * 1.2);
+    ctx.strokeStyle = '#8d6e63';
+    ctx.lineWidth = 2.5 / px;
+    ctx.stroke();
+    const flick = 0.75 + 0.25 * Math.sin(performance.now() / 50);
+    circle(ctx, r * 1.15, r * 1.2, 0.09 * flick);
+    ctx.fillStyle = '#ffd23f';
+    ctx.fill();
+    circle(ctx, 0, 0, r);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    outline(ctx, px);
+    ctx.stroke();
+    roundRect(ctx, r * 0.25, r * 0.65, r * 0.4, r * 0.3, 0.04);
+    ctx.fillStyle = '#6c757d';
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(-r * 0.35, r * 0.35, r * 0.18, r * 0.28, -0.6, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fill();
+  },
+
+  /** A clock face; the hand flips round (and it glows) while it's on. */
+  timer(ctx, def, px, fill, opts) {
+    const r = def.radius;
+    circle(ctx, 0, 0, r);
+    ctx.fillStyle = opts.on ? '#ffe066' : fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
+    ctx.stroke();
+    circle(ctx, 0, 0, r * 0.72);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.fillStyle = OUTLINE;
+    for (let i = 0; i < 4; i++) {
+      const a = (i * Math.PI) / 2;
+      circle(ctx, Math.cos(a) * r * 0.56, Math.sin(a) * r * 0.56, 0.035);
+      ctx.fill();
+    }
+    const a = opts.on ? -Math.PI / 6 : Math.PI / 2 + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(0, 0); ctx.lineTo(Math.cos(a) * r * 0.5, Math.sin(a) * r * 0.5);
+    ctx.strokeStyle = '#ef476f';
+    ctx.lineWidth = 3 / px;
+    ctx.stroke();
+    circle(ctx, 0, 0, 0.05);
+    ctx.fill();
+  },
+
+  /** A pressure plate: a pad that sinks (and lights up) when pressed. */
+  pressurePlate(ctx, def, px, fill, opts) {
+    const w = def.width, h = def.height;
+    roundRect(ctx, -w / 2, -h / 2, w, h * 0.5, 0.05);
+    ctx.fillStyle = '#6c757d';
+    ctx.fill();
+    outline(ctx, px, 2);
+    ctx.stroke();
+    const top = opts.on ? 0 : h * 0.3;
+    roundRect(ctx, -w / 2 + 0.08, -h / 2 + h * 0.3, w - 0.16, h * 0.4 + top, 0.06);
+    ctx.fillStyle = opts.on ? '#ffe066' : fill;
+    ctx.fill();
+    outline(ctx, px, 2.5);
     ctx.stroke();
   },
 
@@ -913,7 +1059,18 @@ export function drawPart(ctx, def, t, px, opts = {}) {
 }
 
 /** Does this kind have a separately-moving hub layer? */
-export const hasHub = (kind) => kind === 'motor' || kind === 'crank' || kind === 'slider' || kind === 'piston';
+export const hasHub = (kind) => ['motor', 'crank', 'slider', 'piston', 'trapdoor'].includes(kind);
+
+/** Hubs drawn UNDER their part (a piston rod slides out of its cylinder). */
+export const hubFirst = (kind) => kind === 'piston';
+
+/** Draw a part with its hub, in the right order (for previews and thumbnails). */
+export function drawWhole(ctx, def, t, px, opts = {}) {
+  if (!hasHub(def.kind)) return drawPart(ctx, def, t, px, opts);
+  if (hubFirst(def.kind)) drawPart(ctx, def, t, px, { ...opts, layer: 'hub' });
+  drawPart(ctx, def, t, px, opts);
+  if (!hubFirst(def.kind)) drawPart(ctx, def, t, px, { ...opts, layer: 'hub' });
+}
 
 // ------------------------------------------------------------------ chains --
 /**

@@ -6,7 +6,7 @@
 // =============================================================================
 import { getDef, partDef, OUTLINE, roleOf, chainRadius } from '../parts/partDefs.js';
 import { outerRadius, socketsOf, lineEnds, lineFrom } from '../parts/geometry.js';
-import { drawPart, hasHub, drawChain, ropeStroke } from './draw.js';
+import { drawPart, drawWhole, hasHub, hubFirst, drawChain, ropeStroke } from './draw.js';
 
 /** Camera: world point (x, y) at the canvas centre, `zoom` pixels per unit. */
 export class Camera {
@@ -33,7 +33,8 @@ const CANNON_BALL = { kind: 'ball', radius: 0.25, color: '#343a40', category: 'o
 function layerOf(def) {
   if (def.kind === 'ramp' || def.kind === 'block' || def.kind === 'track' || def.kind === 'conveyor' || def.kind === 'bouncePad') return 0;
   if (def.kind === 'water') return 8; // see-through, on top of everything
-  if (def.kind === 'piston') return 1.6;
+  if (def.kind === 'piston' || def.kind === 'trapdoor') return 1.6;
+  if (def.kind === 'latch') return 5.9;
   if (roleOf(def.kind) === 'gadget') return 5.7;
   if (def.kind === 'chain') return 4;
   if (def.kind === 'wire') return 7;
@@ -91,14 +92,30 @@ export class Renderer {
         on: scene.signalOf?.(p.uid), props: p.props,
       });
     };
-    for (const { p, def } of parts) drawOne(p, def, 'main');
+    for (const { p, def } of parts) {
+      if (hubFirst(def.kind)) drawOne(p, def, 'hub'); // a piston rod slides out from under its cylinder
+      drawOne(p, def, 'main');
+    }
     // Spinning hubs (motor shafts, crank handles, slider blocks) go above the rotors.
-    for (const { p, def } of parts) if (hasHub(def.kind)) drawOne(p, def, 'hub');
+    for (const { p, def } of parts) if (hasHub(def.kind) && !hubFirst(def.kind)) drawOne(p, def, 'hub');
 
     // Cannon balls in flight.
     for (const s of scene.shots || []) {
       const p = camera.worldToScreen(s.x, s.y);
       drawPart(ctx, CANNON_BALL, { sx: p.x, sy: p.y, angle: s.angle }, px, {});
+    }
+    // Explosions: a quick orange flash that grows and fades.
+    for (const b of scene.booms || []) {
+      const p = camera.worldToScreen(b.x, b.y);
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - b.t);
+      for (const [r, c] of [[2.6, '#ff9e00'], [1.7, '#ffd23f'], [0.8, '#ffffff']]) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, (0.4 + b.t) * r * px, 0, Math.PI * 2);
+        ctx.fillStyle = c;
+        ctx.fill();
+      }
+      ctx.restore();
     }
 
     this._overlays(scene);
@@ -419,10 +436,7 @@ export class Renderer {
       const g = scene.ghost;
       const def = g.length != null ? partDef({ type: g.type, props: { length: g.length } }) : partDef({ type: g.type, props: g.props ?? {} });
       const s = camera.worldToScreen(g.x, g.y);
-      if (!g.hintOnly) drawPart(ctx, def, { sx: s.x, sy: s.y, angle: g.angle }, px, { ghost: true });
-      if (!g.hintOnly && hasHub(def.kind)) {
-        drawPart(ctx, def, { sx: s.x, sy: s.y, angle: g.angle }, px, { ghost: true, layer: 'hub' });
-      }
+      if (!g.hintOnly) drawWhole(ctx, def, { sx: s.x, sy: s.y, angle: g.angle }, px, { ghost: true, props: g.props });
       if (g.label) {
         const e = camera.worldToScreen(g.labelAt.x, g.labelAt.y);
         this._bubble(e.x, e.y - 22, g.label, '#ffffff');

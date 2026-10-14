@@ -5,11 +5,15 @@
 // and the "Selected" box in the right panel. With several parts selected,
 // each setting changes every selected part that has it; a setting shows as
 // "mixed" until you pick a value.
+//
+// Keys are set by clicking the key box and then pressing the key you want
+// (Esc cancels, Backspace clears).
 // =============================================================================
 import { getDef, partDef, roleOf, COLLIDE_MODES, HOLE_SPACING } from '../parts/partDefs.js';
 import { keyLabel } from '../render/draw.js';
 
-/** Keys a Key control can listen for. (Space plays/pauses, so it's not here.) */
+/** Common keys (kept for old code; any key can be picked by pressing it).
+ *  Space plays/pauses, so it can't be used. */
 export const KEY_CHOICES = ['w', 'a', 's', 'd', 'q', 'e', 'z', 'x', 'c', 'f', 'g',
   'arrowup', 'arrowdown', 'arrowleft', 'arrowright', '1', '2', '3', '4', '5'];
 
@@ -18,10 +22,13 @@ const PROPS = [
   { key: 'collide', label: 'Collisions', type: 'choice', default: 'normal',
     options: COLLIDE_MODES.map(([v, l]) => [v, l]),
     title: COLLIDE_MODES.map(([, l, tip]) => `${l}: ${tip}`).join('\n'),
-    has: (def) => !['link', 'connector', 'control', 'bolt', 'gadget'].includes(roleOf(def.kind)) && !isMap(def) && def.kind !== 'motor' && def.kind !== 'crank' },
+    has: (def) => !['link', 'connector', 'control', 'bolt', 'gadget', 'latch'].includes(roleOf(def.kind)) && !isMap(def) && def.kind !== 'motor' && def.kind !== 'crank' },
   { key: 'anchored', label: '⚓ Anchored', type: 'toggle', default: false,
     title: 'Bolted to the background: it stays exactly where it is.',
-    has: (def) => !['link', 'control', 'bolt', 'gadget'].includes(roleOf(def.kind)) && !isMap(def) && def.kind !== 'fixedPin' && def.kind !== 'rotPin' },
+    has: (def) => !['link', 'control', 'bolt', 'gadget', 'latch', 'door'].includes(roleOf(def.kind)) && !isMap(def) && def.kind !== 'fixedPin' && def.kind !== 'rotPin' },
+  { key: 'extended', label: 'Starts pushed out', type: 'toggle', default: false,
+    title: 'On: the rod starts all the way out (things on its top joint go up there too).',
+    has: (def) => def.kind === 'piston' },
   { key: 'pinEnds', label: '⚓ Anchored', type: 'toggle', default: true,
     title: 'On: an end touching nothing is pinned to the background. Off: it hangs free with a little hook.',
     has: (def) => def.kind === 'rope' || def.kind === 'spring' },
@@ -36,14 +43,23 @@ const PROPS = [
     has: (def) => def.kind === 'motor' },
   // Gadget keys: what "+" and "−" mean depends on the gadget.
   { key: 'keyPlus', type: 'select', default: 'none', options: keyOptions(true),
-    label: (def) => ({ piston: '⬆ Push-out key', thruster: '🔥 Fire key', magnet: '🧲 On key', cannon: '💥 Fire key', conveyor: '→ Forward key' }[def.kind]),
+    label: (def) => ({ piston: '⬆ Push-out key', thruster: '🔥 Fire key', magnet: '🧲 On key', cannon: '💥 Fire key', conveyor: '→ Forward key',
+      trapdoor: '🚪 Open key', latch: '🔓 Let-go key', bomb: '💣 Boom key' }[def.kind]),
     title: 'Hold this key while playing. With no keys (and no wires) it just runs on its own.',
-    has: (def) => ['piston', 'thruster', 'magnet', 'cannon', 'conveyor'].includes(def.kind) },
+    has: (def) => ['piston', 'thruster', 'magnet', 'cannon', 'conveyor', 'trapdoor', 'latch', 'bomb'].includes(def.kind) },
   { key: 'keyMinus', type: 'select', default: 'none', options: keyOptions(true),
     label: (def) => ({ piston: '⬇ Pull-in key', thruster: '↩ Reverse key', conveyor: '← Backward key' }[def.kind]),
     has: (def) => ['piston', 'thruster', 'conveyor'].includes(def.kind) },
   { key: 'thrust', label: 'Thrust', type: 'choice', default: 'medium',
     options: [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']], has: (def) => def.kind === 'thruster' },
+  { key: 'power', label: 'Power', type: 'choice', default: 'medium',
+    options: [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']], has: (def) => def.kind === 'cannon' },
+  { key: 'opens', label: 'Opens', type: 'choice', default: 'down',
+    options: [['down', '⬇ Down'], ['up', '⬆ Up']], has: (def) => def.kind === 'trapdoor' },
+  { key: 'speed', label: 'Speed', type: 'choice', default: 'gentle',
+    options: [['gentle', 'Gentle'], ['fast', 'Snap! (catapult)']], has: (def) => def.kind === 'trapdoor' },
+  { key: 'every', label: 'Flips every', type: 'choice', default: 1,
+    options: [[0.5, '½ s'], [1, '1 s'], [2, '2 s'], [4, '4 s']], has: (def) => def.kind === 'timer' },
   { key: 'idle', label: 'When not powered', type: 'choice', default: 'brake',
     options: [['brake', 'Brake'], ['free', 'Spin free']],
     title: 'For motors run by keys or wired controls: what happens when nothing is pressed.',
@@ -61,7 +77,7 @@ const PROPS = [
     has: (def) => def.kind === 'keyButton' },
   { key: 'reverse', label: 'Makes motors go', type: 'choice', default: false,
     options: [[false, 'Forward'], [true, 'Reverse']],
-    has: (def) => def.kind === 'switch' || def.kind === 'button' },
+    has: (def) => ['switch', 'button', 'timer', 'pressurePlate'].includes(def.kind) },
 ];
 
 function keyOptions(withNone) {
@@ -140,17 +156,7 @@ function control(prop, label, value, set) {
   wrap.className = 'choice';
   wrap.innerHTML = `<span>${label}</span>`;
   if (prop.type === 'select') {
-    const sel = document.createElement('select');
-    sel.className = 'select';
-    if (value === undefined) sel.insertAdjacentHTML('beforeend', '<option value="">mixed</option>');
-    for (const [v, text] of prop.options) {
-      const o = document.createElement('option');
-      o.value = v; o.textContent = text;
-      if (v === value) o.selected = true;
-      sel.appendChild(o);
-    }
-    sel.addEventListener('change', () => { if (sel.value) set(sel.value); });
-    wrap.appendChild(sel);
+    wrap.appendChild(keyPicker(value, set));
     return wrap;
   }
   const row = document.createElement('div');
@@ -164,6 +170,66 @@ function control(prop, label, value, set) {
   }
   wrap.appendChild(row);
   return wrap;
+}
+
+// ------------------------------------------------------------ key picker --
+/** Cancels the key box that's waiting for a key press (only one at a time). */
+let stopListening = null;
+
+/** Keys that can't be used (Space plays/pauses). */
+const RESERVED = [' '];
+
+/**
+ * A key box: shows the key; click it, then press any key to use that one.
+ * Esc cancels, Backspace/Delete sets "none".
+ */
+function keyPicker(value, set) {
+  const row = document.createElement('div');
+  row.className = 'key-pick';
+  const box = document.createElement('button');
+  box.className = 'key-box';
+  const show = () => {
+    box.classList.remove('listening');
+    box.textContent = value === undefined ? 'mixed' : value === 'none' ? '— none —' : keyLabel(value);
+    box.classList.toggle('empty', value === 'none' || value === undefined);
+  };
+  show();
+  box.title = 'Click, then press the key you want';
+  const clear = document.createElement('button');
+  clear.className = 'key-clear';
+  clear.textContent = '✕';
+  clear.title = 'No key';
+  clear.hidden = value === 'none';
+  clear.addEventListener('click', () => set('none'));
+
+  box.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (stopListening) { const was = box.classList.contains('listening'); stopListening(); if (was) return; }
+    box.classList.add('listening');
+    box.textContent = 'Press a key…';
+    const onKey = (ev) => {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      const k = ev.key.toLowerCase();
+      if (k === 'escape') return done();
+      if (k === 'backspace' || k === 'delete') { done(); set('none'); return; }
+      if (RESERVED.includes(k)) { box.textContent = 'Not Space! Another key…'; return; }
+      done();
+      set(k);
+    };
+    const onPointer = (ev) => { if (ev.target !== box) done(); };
+    const done = () => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('pointerdown', onPointer, true);
+      stopListening = null;
+      show();
+    };
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('pointerdown', onPointer, true);
+    stopListening = done;
+  });
+  row.append(box, clear);
+  return row;
 }
 
 /** Does any part in this list have something the Screwdriver can set? */

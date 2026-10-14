@@ -30,6 +30,10 @@
 //     the gear train (chains) and the physics world (springs, ropes, wires).
 //   • CONTROLS (switches, buttons, keys) ride on the part under them, or sit
 //     on the background if there's nothing there.
+//   • GADGETS and LATCHES ride on the part under them too. (A latch's grip
+//     on the NEXT part under it is a joint the physics world can let go of.)
+//   • A TRAP DOOR's hinge bracket bolts onto whatever is at its hinge end (or
+//     the background); the flap swings on it (a powered hinge).
 //   • An ANCHORED part (Screwdriver) is bolted to the background.
 //   • A BOLT locks together every part under it, wherever they overlap.
 //     Parts bolted together don't also join at each other's holes (a beam
@@ -42,6 +46,8 @@ import { getDef, roleOf } from '../parts/partDefs.js';
 import { socketsOf, pickPart, partsAt } from '../parts/geometry.js';
 
 export const WORLD = 'world';
+/** Roles that sit ON other parts instead of being something to sit on. */
+const RIDERS = ['link', 'control', 'bolt', 'gadget', 'latch'];
 /** Sockets closer than this (world units) are treated as the same point. */
 export const CLUSTER_TOL = 0.12;
 
@@ -77,7 +83,7 @@ export function findClusters(parts) {
     for (const s of socketsOf(part)) {
       let c = clusters.find((cl) => Math.hypot(cl.x - s.x, cl.y - s.y) < CLUSTER_TOL);
       if (!c) { c = { x: s.x, y: s.y, uids: [], pivots: [] }; clusters.push(c); }
-      if (s.pivot) c.pivots.push({ uid: part.uid, sub: s.sub, bolt: !!s.bolt });
+      if (s.pivot) c.pivots.push({ uid: part.uid, sub: s.sub, bolt: !!s.bolt, mount: !!s.mount });
       else if (!c.uids.includes(part.uid)) c.uids.push(part.uid);
     }
   }
@@ -92,6 +98,7 @@ export function findClusters(parts) {
  *   bodyOf: (key)=>string,
  *   revolutes: Array<{id,a,b,x,y,driverUid,pivot}>,
  *   prismatics: Array<{a,b,uid}>,
+ *   hinges: Array<{a,b,uid,x,y}>,  // trap doors: flap b swings on bracket a
  *   joints: Array<{x,y,type}>,   // 'weld' | 'spin' | 'drive' (edit-mode markers)
  *   clusters: Array, warnings: string[] }}
  */
@@ -108,7 +115,7 @@ export function buildAssembly(parts) {
     const def = getDef(part.type);
     if (roleOf(def.kind) === 'link') continue; // chains/springs/ropes aren't bodies
     addElement(mainKey(part.uid), part.uid, 'main');
-    if (def.kind === 'motor' || def.kind === 'crank' || def.kind === 'slider' || def.kind === 'piston') addElement(hubKey(part.uid), part.uid, 'hub');
+    if (['motor', 'crank', 'slider', 'piston', 'trapdoor'].includes(def.kind)) addElement(hubKey(part.uid), part.uid, 'hub');
     // Map pieces (ramps, blocks, track) and pins are part of the static background.
     if (def.kind === 'ramp' || def.kind === 'block' || def.kind === 'track' ||
         def.kind === 'conveyor' || def.kind === 'bouncePad' || def.kind === 'water' ||
@@ -117,11 +124,11 @@ export function buildAssembly(parts) {
     }
   }
 
-  // Controls ride on whatever solid part is under them.
-  const solid = parts.filter((p) => { const r = roleOf(getDef(p.type).kind); return r !== 'link' && r !== 'control' && r !== 'bolt' && r !== 'gadget' && getDef(p.type).kind !== 'water'; });
+  // Controls, gadgets and latches ride on whatever solid part is under them.
+  const solid = parts.filter((p) => !RIDERS.includes(roleOf(getDef(p.type).kind)) && getDef(p.type).kind !== 'water');
   for (const part of parts) {
     const r = roleOf(getDef(part.type).kind);
-    if (r !== 'control' && r !== 'gadget') continue;
+    if (r !== 'control' && r !== 'gadget' && r !== 'latch') continue;
     const under = pickPart(solid, part.x, part.y);
     uf.union(under ? mainKey(under.uid) : WORLD, mainKey(part.uid));
   }
@@ -232,12 +239,13 @@ export function buildAssembly(parts) {
     // Pivot sockets (crank pins, slider blocks) pivot on whatever is here.
     // Gear face holes ("bolt") bolt it on instead, unless there's a hinge or
     // a rotating pin here.
-    const pivotKeys = cl.pivots.map((pv) => ({ key: pv.sub === 'hub' ? hubKey(pv.uid) : mainKey(pv.uid), bolt: pv.bolt }));
+    // Trap door brackets ("mount") always bolt on.
+    const pivotKeys = cl.pivots.map((pv) => ({ key: pv.sub === 'hub' ? hubKey(pv.uid) : mainKey(pv.uid), bolt: pv.bolt, mount: pv.mount }));
     if (pivotKeys.length) {
       const base = freeBeams[0] ?? unit[0] ?? (fixed || rot ? WORLD : pivotKeys[0].key);
-      for (const { key: k, bolt } of pivotKeys) {
+      for (const { key: k, bolt, mount } of pivotKeys) {
         if (k === base) continue;
-        if ((fixed && base === WORLD) || (bolt && !hinge && !rot)) weld(base, k);
+        if ((fixed && base === WORLD) || mount || (bolt && !hinge && !rot)) weld(base, k);
         else pendingRevolutes.push([base, k, cl, null, true]);
       }
     }
@@ -255,6 +263,14 @@ export function buildAssembly(parts) {
     const bases = clusters.filter((cl) => cl.pivots.some((pv) => pv.uid === part.uid && pv.sub === 'main'));
     if (bases.every((cl) => cl.uids.length === 0 && cl.pivots.length === 1)) weld(WORLD, mainKey(part.uid));
     pendingPrismatics.push([mainKey(part.uid), hubKey(part.uid), part.uid, true]);
+  }
+  // Trap doors: a bracket with nothing at its hinge is on the background.
+  const pendingHinges = [];
+  for (const part of parts) {
+    if (getDef(part.type).kind !== 'trapdoor') continue;
+    const cl = clusters.find((c) => c.pivots.some((pv) => pv.uid === part.uid));
+    if (!cl || (cl.uids.length === 0 && cl.pivots.every((pv) => pv.mount))) weld(WORLD, hubKey(part.uid));
+    pendingHinges.push([hubKey(part.uid), mainKey(part.uid), part.uid, cl]);
   }
   for (const part of parts) {
     if (getDef(part.type).kind !== 'slider') continue;
@@ -295,12 +311,18 @@ export function buildAssembly(parts) {
     if (a !== b && b !== WORLD) prismatics.push({ a, b, uid, piston });
   }
 
+  const hinges = [];
+  for (const [ka, kb, uid, cl] of pendingHinges) {
+    const a = bodyOf(ka), b = bodyOf(kb);
+    if (a !== b && b !== WORLD) hinges.push({ a, b, uid, x: cl.x, y: cl.y });
+  }
+
   // Joint markers for edit mode: what happens at each shared point?
   const joints = [];
   for (const cl of clusters) {
     if (cl.uids.length + cl.pivots.length < 2) continue;
     const here = revolutes.filter((r) => r.cluster === cl.index);
-    const type = here.some((r) => r.driverUid != null) ? 'drive' : here.length ? 'spin' : 'weld';
+    const type = here.some((r) => r.driverUid != null) ? 'drive' : here.length || hinges.some((h) => h.x === cl.x && h.y === cl.y) ? 'spin' : 'weld';
     joints.push({ x: cl.x, y: cl.y, type });
   }
 
@@ -327,7 +349,7 @@ export function buildAssembly(parts) {
 
   return {
     onRotor,
-    elements, bodies: [...bodyMap.values()], bodyOf, revolutes, prismatics, joints, clusters, warnings,
+    elements, bodies: [...bodyMap.values()], bodyOf, revolutes, prismatics, hinges, joints, clusters, warnings,
     /** The axle revolute that a body spins on (it is the joint's body B), if any.
      *  Pivots (crank pins) don't count: a wheel spins on its centre. */
     axleOf(bodyId) { return revolutes.find((r) => r.b === bodyId && !r.pivot) || null; },

@@ -115,7 +115,7 @@ export const PARTS = [
   // a free bottom end is fixed to the background.
   { id: 'piston', name: 'Piston', category: 'movers', kind: 'piston', size: 'M', drawn: true,
     length: 2.4, thickness: 0.5, massPerLength: 0.5, shape: 'piston', color: '#8338ec',
-    tip: 'Drag to draw it. It pushes out and pulls back on its own, or give it keys / wire a switch. Its ends pivot; put BOTH yellow base joints on a beam and it can\'t swing.' },
+    tip: 'Drag to draw it. It pushes out and pulls back on its own, or give it keys / wire a switch. Its ends pivot; put BOTH yellow base joints on a beam and it can\'t swing. The Screwdriver can make it start pushed out.' },
   { id: 'crank', name: 'Hand Crank', category: 'movers', kind: 'crank', size: 'M',
     armLength: 1.0, mass: 0.5, shape: 'crank', color: '#ff70a6',
     tip: 'Human power! While playing, drag the handle around to turn it.' },
@@ -172,6 +172,18 @@ export const PARTS = [
   { id: 'balloon', name: 'Balloon', category: 'gadgets', kind: 'balloon', size: 'M',
     radius: 0.7, mass: 0.2, lift: 14, shape: 'balloon', color: '#ff70a6',
     tip: 'Floats up. Tie it to things with a Rope (draw the rope from the balloon to a part).' },
+  // A hinged flap with its own motor: drawn from the hinge end. Opens while
+  // its key is held (or a wired switch is on), closes when let go.
+  { id: 'trapdoor', name: 'Trap Door', category: 'gadgets', kind: 'trapdoor', size: 'M', drawn: true,
+    length: 3.2, thickness: 0.3, massPerLength: 0.35, shape: 'trapdoor', color: '#e9a15b',
+    tip: 'Drag to draw it, starting at the hinge (put that on a beam hole or a pin). Hold its key to swing it open, let go to close. Set it to open Up and Snap and it\'s a catapult flipper!' },
+  // Holds two overlapping parts together until it's told to let go.
+  { id: 'latch', name: 'Latch', category: 'gadgets', kind: 'latch', size: 'S',
+    radius: 0.26, mass: 0.05, shape: 'latch', color: '#adb5bd',
+    tip: 'Drop it where two parts overlap (a catapult arm over its frame). It holds them together until you press its key (or a wired button), then lets go. Let go of the key and it catches them again when they come back. With no key it lets go after 2 seconds.' },
+  { id: 'bomb', name: 'Bomb', category: 'gadgets', kind: 'bomb', size: 'S',
+    radius: 0.4, mass: 1.0, shape: 'bomb', color: '#343a40',
+    tip: 'A loose bomb: load it into a catapult! It goes off when it hits something hard, or when you press its key.' },
 
   // ------------------------------------------------------------- CONTROLS --
   // Yellow family. Wire them to motors with the Wrench. A control rides on
@@ -185,6 +197,12 @@ export const PARTS = [
   { id: 'key-button', name: 'Key', category: 'controls', kind: 'keyButton', size: 'S',
     radius: 0.4, mass: 0.1, shape: 'keyButton', color: '#e9ecef',
     tip: 'Two keys: D turns wired motors clockwise (a car goes right), A the other way. Change the keys with the Screwdriver. Wire it with the Wrench.' },
+  { id: 'timer', name: 'Timer', category: 'controls', kind: 'timer', size: 'S',
+    radius: 0.4, mass: 0.1, shape: 'timer', color: '#8ecae6',
+    tip: 'Switches wired things on and off by itself, every second (change it with the Screwdriver). Wire it with the Wrench.' },
+  { id: 'pressure-plate', name: 'Pressure Plate', category: 'controls', kind: 'pressurePlate', size: 'S',
+    width: 1.2, height: 0.3, mass: 0.1, shape: 'pressurePlate', color: '#80ed99',
+    tip: 'On while something sits on it: wire it to a trap door, latch or cannon to make a trap. Wire it with the Wrench.' },
   // The wire itself is made by the Wrench tool (not from the gallery).
   { id: 'wire', name: 'Wire', category: 'controls', kind: 'wire', hidden: true, mass: 0, shape: 'wire', color: '#ffd23f' },
 
@@ -306,8 +324,14 @@ export function scaleSpec(def) {
  *  end (a whole number of holes, so a beam along the piston hits both). */
 export const pistonMount = (def) => (def.length >= 2 ? 2 : 1) * HOLE_SPACING;
 
+/** How far a piston's rod pushes out. */
+export const pistonStroke = (def) => def.length * 0.8;
+
+/** How far a piston's rod is already out in the build (it can start pushed out). */
+export const pistonExt = (part, def) => (part.props?.extended ? pistonStroke(def) : 0);
+
 /** Parts the Wrench can wire controls to, and keys can run. */
-export const isActuator = (kind) => ['motor', 'piston', 'thruster', 'magnet', 'cannon', 'conveyor'].includes(kind);
+export const isActuator = (kind) => ['motor', 'piston', 'thruster', 'magnet', 'cannon', 'conveyor', 'trapdoor', 'latch', 'bomb'].includes(kind);
 
 /** Collision modes the Screwdriver can set (props.collide). */
 export const COLLIDE_MODES = [
@@ -330,6 +354,8 @@ export const isDrawn = (def) => !!def.drawn;
  *   bolt      – locks together every part under it (no sockets needed)
  *   piston    – a powered push-rod with a pivot at each end
  *   gadget    – thruster/magnet/cannon: ride on the part under them
+ *   door      – a trap door: a flap on a powered hinge
+ *   latch     – rides on one part under it, holds the next one until released
  *   object    – loose test objects (balls, crates) or map pieces (ramps)
  */
 export function roleOf(kind) {
@@ -342,7 +368,9 @@ export function roleOf(kind) {
     case 'plate': return 'beam';
     case 'piston': return 'piston';
     case 'thruster': case 'magnet': case 'cannon': return 'gadget';
-    case 'switch': case 'button': case 'keyButton': return 'control';
+    case 'trapdoor': return 'door';
+    case 'latch': return 'latch';
+    case 'switch': case 'button': case 'keyButton': case 'timer': case 'pressurePlate': return 'control';
     case 'bolt': return 'bolt';
     default: return 'object';
   }

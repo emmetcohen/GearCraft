@@ -16,12 +16,12 @@
 // down or stalls. Nothing ever breaks.
 // =============================================================================
 import * as planck from '../../lib/planck.mjs';
-import { getDef, partDef, gearLayers, roleOf, isActuator } from '../parts/partDefs.js';
-import { socketsOf, lineEnds } from '../parts/geometry.js';
+import { getDef, partDef, gearLayers, roleOf, isActuator, pistonStroke, pistonExt } from '../parts/partDefs.js';
+import { socketsOf, lineEnds, partsAt } from '../parts/geometry.js';
 import { buildAssembly, WORLD, mainKey, hubKey, CLUSTER_TOL } from './assembly.js';
 import { solveGearTrain } from './gearTrain.js';
 
-const { World, Vec2, Circle, Box, Polygon, RevoluteJoint, GearJoint, MouseJoint, PrismaticJoint, DistanceJoint, RopeJoint } = planck;
+const { World, Vec2, Circle, Box, Polygon, RevoluteJoint, GearJoint, MouseJoint, PrismaticJoint, DistanceJoint, RopeJoint, WeldJoint } = planck;
 
 // Collision categories (bit flags). Machine parts don't collide with each
 // other — gears are connected by math, not by teeth bumping — but everything
@@ -59,7 +59,15 @@ export const PISTON_SPEED = 2.5;         // m/s
 export const PISTON_FORCE_PER_TORQUE = 6; // piston force (N) per N·m of the motor-power slider
 export const THRUST = { low: 15, medium: 35, high: 90 }; // N
 export const MAGNET_RANGE = 4.5;         // m
-export const CANNON_SPEED = 16;          // m/s
+export const CANNON_SPEED = 16;          // m/s (medium power)
+export const CANNON_POWER = { low: 10, medium: 16, high: 24 }; // m/s
+export const MAGNET_GRIP = 4;            // things a magnet can hold at once
+export const DOOR_SPEED = { gentle: 3, fast: 14 }; // rad/s
+export const DOOR_SWING = Math.PI / 2;
+export const LATCH_AUTO = 2;             // s: an uncontrolled latch lets go after this
+export const BOMB_RANGE = 4.5;           // m
+export const BOMB_KICK = 30;             // N·s at point blank
+export const BOMB_IMPACT = 7;            // m/s: a bump this hard sets a bomb off
 export const CONVEYOR_SPEED = 3;         // m/s
 export const WATER_DENSITY = 1.5;        // kg/m² (2D): lighter parts float
 const MAX_SHOTS = 40;
@@ -115,12 +123,17 @@ export class Simulation {
     this.conveyors = new Map();   // fixture -> conveyor part
     this.shots = [];              // cannon balls in flight: { body, age }
     this.gadgetState = new Map(); // gadget uid -> { on, cool, prev }
+    this.doors = new Map();       // trap door uid -> { joint, sign }
+    this.latches = new Map();     // latch uid -> { a, b, la, lb, ref, x, y, joint }
+    this.booms = [];              // explosions: { x, y, age }
 
     this._createBodies(map);
     this._createRevolutes();
     this._createPrismatics();
+    this._createHinges();
     this._createGearJoints();
     this._createLinks();
+    this._createLatches();
     this._createWires();
     this.world.on('pre-solve', (contact) => this._conveyorContact(contact));
     this.applySettings(settings);
@@ -162,6 +175,7 @@ export class Simulation {
    *  position relative to the body origin. */
   _addPartFixtures(body, part, sub, lx, ly) {
     const def = partDef(part);
+    this._fixtureUid = part.uid; // tag fixtures with their part (bombs remove theirs)
     const a = part.angle;
     const c = Vec2(lx, ly);
     const at = (dx, dy) => Vec2(lx + dx * Math.cos(a) - dy * Math.sin(a), ly + dx * Math.sin(a) + dy * Math.cos(a));
@@ -221,8 +235,10 @@ export class Simulation {
       case 'piston': {
         const L = def.length;
         if (sub === 'hub') {
-          // The rod: from the middle of the cylinder out to the top end.
-          add(Box(L / 4 + 0.1, 0.1, at(L / 4, 0), a), (L / 2) * 0.2, { cat: CAT.MACHINE, friction: 0.5 });
+          // The rod: from deep inside the cylinder out to the top end (which
+          // may start pushed out).
+          const ext = pistonExt(part, def);
+          add(Box((L - 0.1) / 2, 0.1, at(0.05 + ext, 0), a), (L - 0.1) * 0.2, { cat: CAT.MACHINE, friction: 0.5 });
         } else {
           add(Box(L / 2, def.thickness / 2, c, a), L * def.thickness, { cat: CAT.MACHINE, friction: 0.5 });
         }
@@ -233,8 +249,18 @@ export class Simulation {
         add(Box(hx, hy, c, a), 4 * hx * hy, { cat: CAT.MACHINE, friction: 0.7 });
         break;
       }
-      case 'thruster': case 'magnet': case 'cannon':
+      case 'thruster': case 'magnet': case 'cannon': case 'latch':
         add(Circle(c, def.radius * 0.9), Math.PI * (def.radius * 0.9) ** 2, { cat: CAT.MACHINE, sensor: true });
+        break;
+      case 'trapdoor':
+        if (sub === 'hub') add(Circle(at(-def.length / 2, 0), 0.18), 0.1, { cat: CAT.MACHINE, sensor: true, density: 1 });
+        else add(Box(def.length / 2, def.thickness / 2, c, a), def.length * def.thickness, { cat: CAT.MACHINE, friction: 0.8 });
+        break;
+      case 'bomb':
+        add(Circle(c, def.radius), Math.PI * def.radius ** 2, { cat: CAT.OBJECT, friction: 0.6, restitution: 0.2 });
+        break;
+      case 'pressurePlate':
+        add(Box(def.width / 2, def.height / 2, c, a), def.width * def.height, { cat: CAT.MACHINE, sensor: true });
         break;
       case 'balloon':
         add(Circle(c, def.radius), Math.PI * def.radius ** 2, { cat: CAT.OBJECT, friction: 0.3, restitution: 0.4 });
@@ -250,7 +276,7 @@ export class Simulation {
         this._addFixture(body, Box(def.width / 2, def.height / 2, c, a), { cat: CAT.GROUND, friction: 0.6, restitution: 1 });
         break;
       case 'water': break; // no shape: buoyancy is worked out each step
-      case 'switch': case 'button': case 'keyButton':
+      case 'switch': case 'button': case 'keyButton': case 'timer':
         add(Circle(c, def.radius), Math.PI * def.radius ** 2, { cat: CAT.MACHINE, sensor: true });
         break;
       case 'ball':
@@ -278,6 +304,7 @@ export class Simulation {
       shape, density, friction, restitution, isSensor: sensor,
       filterCategoryBits: cat, filterMaskBits: MASK[cat],
     });
+    fixture.uid = this._fixtureUid;
     this.fixtures.push({ fixture, baseFriction: friction });
     return fixture;
   }
@@ -311,13 +338,14 @@ export class Simulation {
       const def = partDef(part);
       const axis = Vec2(Math.cos(part.angle), Math.sin(part.angle));
       if (pr.piston) {
-        // The rod pushes out from fully in (0) to nearly the cylinder's length.
-        const stroke = def.length * 0.9;
+        // The rod pushes out from fully in (0) to `stroke`. It may start
+        // pushed out (ext), and the joint counts from where it starts.
+        const stroke = pistonStroke(def), ext = pistonExt(part, def);
         const joint = this.world.createJoint(PrismaticJoint({
-          enableLimit: true, lowerTranslation: 0, upperTranslation: stroke,
+          enableLimit: true, lowerTranslation: -ext, upperTranslation: stroke - ext,
           enableMotor: true, maxMotorForce: 0, motorSpeed: 0,
         }, this.bodies.get(pr.a), this.bodies.get(pr.b), Vec2(part.x, part.y), axis));
-        this.pistons.set(pr.uid, { joint, stroke, dir: 1, part });
+        this.pistons.set(pr.uid, { joint, stroke, offset: ext, dir: ext ? -1 : 1, part });
         this.bodies.get(pr.b).setSleepingAllowed(false);
         continue;
       }
@@ -327,6 +355,52 @@ export class Simulation {
         enableMotor: true, maxMotorForce: AXLE_FRICTION * 2, motorSpeed: 0,
       }, this.bodies.get(pr.a), this.bodies.get(pr.b), Vec2(part.x, part.y), axis));
     }
+  }
+
+  /** Trap doors: the flap swings on its bracket, driven by a little motor. */
+  _createHinges() {
+    for (const h of this.assembly.hinges) {
+      const part = this.byUid.get(h.uid);
+      // Which way is "open"? Rotating by +θ moves the free end up by θ·cos(angle).
+      const c = Math.cos(part.angle);
+      const down = (part.props.opens ?? 'down') === 'down';
+      const sign = (Math.abs(c) < 0.2 ? -1 : -Math.sign(c)) * (down ? 1 : -1);
+      const joint = this.world.createJoint(RevoluteJoint({
+        enableLimit: true, lowerAngle: sign > 0 ? 0 : -DOOR_SWING, upperAngle: sign > 0 ? DOOR_SWING : 0,
+        enableMotor: true, motorSpeed: 0, maxMotorTorque: 0,
+      }, this.bodies.get(h.a), this.bodies.get(h.b), Vec2(h.x, h.y)));
+      this.bodies.get(h.b).setSleepingAllowed(false);
+      this.doors.set(h.uid, { joint, sign, part });
+    }
+  }
+
+  /** Latches grip the next part under them (or the background) with a
+   *  joint that can be let go of. */
+  _createLatches() {
+    const solid = this.parts.filter((p) => !['link', 'control', 'bolt', 'gadget', 'latch'].includes(roleOf(getDef(p.type).kind)) &&
+      getDef(p.type).kind !== 'water');
+    for (const part of this.parts) {
+      if (getDef(part.type).kind !== 'latch') continue;
+      const a = this.elements.get(mainKey(part.uid))?.body;
+      if (!a) continue;
+      let b = null;
+      for (const p of partsAt(solid, part.x, part.y)) {
+        const body = this.elements.get(mainKey(p.uid))?.body;
+        if (body && body !== a) { b = body; break; }
+      }
+      if (!b && a !== this.ground) b = this.ground;
+      if (!b) continue;
+      const pt = Vec2(part.x, part.y);
+      const latch = { a, b, la: a.getLocalPoint(pt), lb: b.getLocalPoint(pt), ref: b.getAngle() - a.getAngle(), joint: null };
+      this._lock(latch);
+      this.latches.set(part.uid, latch);
+      a.setSleepingAllowed(false);
+      b.setSleepingAllowed(false);
+    }
+  }
+
+  _lock(latch) {
+    latch.joint = this.world.createJoint(WeldJoint({}, latch.a, latch.b, latch.a.getWorldPoint(latch.la)));
   }
 
   /** The body under a world point: a part with a socket there first, then
@@ -388,7 +462,7 @@ export class Simulation {
     for (const part of this.parts) {
       const kind = getDef(part.type).kind;
       if (kind === 'switch') this.signals.set(part.uid, !!part.props.on);
-      if (kind === 'button') this.signals.set(part.uid, false);
+      if (kind === 'button' || kind === 'timer' || kind === 'pressurePlate') this.signals.set(part.uid, false);
       if (kind === 'keyButton') this.signals.set(part.uid, 0);
       if (kind !== 'wire') continue;
       const a = this.byUid.get(part.props.a), b = this.byUid.get(part.props.b);
@@ -576,12 +650,16 @@ export class Simulation {
    * one carrying a motor; the heaviest wins. Returns a part uid or null.
    */
   autoFollowTarget() {
-    const pinned = new Set();
-    for (const r of this.assembly.revolutes) {
-      if (r.a === WORLD) pinned.add(r.b);
-      if (r.b === WORLD) pinned.add(r.a);
+    // Pinned = joined to the background through any chain of joints (a
+    // piston rod on a piston on a pin is pinned too).
+    const edges = [...this.assembly.revolutes, ...this.assembly.prismatics, ...this.assembly.hinges];
+    const pinned = new Set([WORLD]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const e of edges) {
+        if (pinned.has(e.a) !== pinned.has(e.b)) { pinned.add(e.a); pinned.add(e.b); grew = true; }
+      }
     }
-    for (const pr of this.assembly.prismatics) if (pr.a === WORLD) pinned.add(pr.b);
     let best = null;
     for (const ab of this.assembly.bodies) {
       if (ab.isStatic || pinned.has(ab.id)) continue;
@@ -628,6 +706,7 @@ export class Simulation {
   // ----------------------------------------------------------------- step --
   step(dt = DT) {
     this._updateCranks();
+    this._updateControls();
     this._updateGadgets(dt);
     this.world.step(dt, VEL_ITERS, POS_ITERS);
     this.time += dt;
@@ -670,6 +749,36 @@ export class Simulation {
     }
   }
 
+  /** Timers tick; pressure plates feel what's on them. */
+  _updateControls() {
+    for (const part of this.parts) {
+      const kind = getDef(part.type).kind;
+      if (kind === 'timer') {
+        const every = Number(part.props.every ?? 1);
+        this.setSignal(part.uid, Math.floor(this.time / every + 1e-9) % 2 === 1);
+      } else if (kind === 'pressurePlate') {
+        this.setSignal(part.uid, this._pressed(part));
+      }
+    }
+  }
+
+  /** Is anything (that isn't the plate's own machine) touching this plate? */
+  _pressed(part) {
+    const el = this.elements.get(mainKey(part.uid));
+    const t = this.transformOf(part.uid);
+    if (!el || !t) return false;
+    const def = partDef(part);
+    const c = Math.abs(Math.cos(t.angle)), s = Math.abs(Math.sin(t.angle));
+    const ex = (def.width / 2) * c + (def.height / 2) * s + 0.1, ey = (def.width / 2) * s + (def.height / 2) * c + 0.1;
+    let hit = false;
+    this.world.queryAABB(planck.AABB(Vec2(t.x - ex, t.y - ey), Vec2(t.x + ex, t.y + ey)), (f) => {
+      const b = f.getBody();
+      if (b.isDynamic() && b !== el.body && !f.isSensor()) { hit = true; return false; }
+      return true;
+    });
+    return hit;
+  }
+
   // -------------------------------------------------------------- gadgets --
   /**
    * What a gadget is told to do: null = nobody's controlling it (it does its
@@ -698,6 +807,9 @@ export class Simulation {
       const kind = getDef(part.type).kind;
       switch (kind) {
         case 'piston': this._piston(part); break;
+        case 'trapdoor': this._door(part); break;
+        case 'latch': this._latch(part); break;
+        case 'bomb': this._bomb(part); break;
         case 'thruster': case 'magnet': case 'cannon': this._gadget(part, kind, dt); break;
         case 'conveyor': {
           const cmd = this._command(part);
@@ -716,8 +828,12 @@ export class Simulation {
     // Old cannon balls disappear.
     for (const s of this.shots) s.age += dt;
     while (this.shots.length && (this.shots.length > MAX_SHOTS || this.shots[0].age > 12)) {
-      this.world.destroyBody(this.shots.shift().body);
+      const body = this.shots.shift().body;
+      this._dropHolds(body);
+      this.world.destroyBody(body);
     }
+    for (const b of this.booms) b.age += dt;
+    this.booms = this.booms.filter((b) => b.age < 0.7);
   }
 
   _piston(part) {
@@ -727,7 +843,7 @@ export class Simulation {
     let v;
     if (cmd == null) {
       // Nobody's controlling it: push out, pull back, repeat.
-      const x = p.joint.getJointTranslation();
+      const x = p.joint.getJointTranslation() + p.offset;
       if (x >= p.stroke - 0.03) p.dir = -1;
       if (x <= 0.03) p.dir = 1;
       v = p.dir;
@@ -736,6 +852,83 @@ export class Simulation {
     p.joint.setMaxMotorForce(this.settings.motorTorque * PISTON_FORCE_PER_TORQUE);
     this.gadgetState.set(part.uid, { on: v });
   }
+
+  /** Trap door: open while told to; with no control, open 2 s / shut 2 s. */
+  _door(part) {
+    const d = this.doors.get(part.uid);
+    if (!d) return;
+    const cmd = this._command(part);
+    const open = cmd == null ? Math.floor(this.time / 2) % 2 === 1 : cmd > 0;
+    const fast = part.props.speed === 'fast';
+    d.joint.setMotorSpeed((open ? 1 : -1) * d.sign * DOOR_SPEED[fast ? 'fast' : 'gentle']);
+    d.joint.setMaxMotorTorque(this.settings.motorTorque * (fast ? 4 : 2));
+    this.gadgetState.set(part.uid, { on: open ? 1 : 0 });
+  }
+
+  /** Latch: lets go while told to (no control: after 2 s). Once it's told to
+   *  hold again, it catches as soon as the two parts are back where they started. */
+  _latch(part) {
+    const l = this.latches.get(part.uid);
+    if (!l) return;
+    const cmd = this._command(part);
+    const release = cmd == null ? this.time >= LATCH_AUTO : cmd > 0;
+    if (release && l.joint) { this.world.destroyJoint(l.joint); l.joint = null; }
+    if (!release && !l.joint) {
+      const pa = l.a.getWorldPoint(l.la), pb = l.b.getWorldPoint(l.lb);
+      let da = l.b.getAngle() - l.a.getAngle() - l.ref;
+      da = Math.atan2(Math.sin(da), Math.cos(da));
+      if (Math.hypot(pa.x - pb.x, pa.y - pb.y) < 0.12 && Math.abs(da) < 0.06) this._lock(l);
+    }
+    this.gadgetState.set(part.uid, { on: l.joint ? 0 : 1 });
+  }
+
+  /** Bomb: goes off on a hard knock, or when its key / wired control says so. */
+  _bomb(part) {
+    const el = this.elements.get(mainKey(part.uid));
+    if (!el) return; // already gone off
+    const st = this.gadgetState.get(part.uid) ?? { on: 0 };
+    const v = el.body.getLinearVelocity();
+    // A knock = a big, sudden change that SLOWS it (hitting something), not
+    // being flung (a catapult speeding it up).
+    const knock = st.prev && this.time > 0.3 && Math.hypot(v.x - st.prev.x, v.y - st.prev.y) > BOMB_IMPACT &&
+      Math.hypot(v.x, v.y) < Math.hypot(st.prev.x, st.prev.y);
+    st.prev = { x: v.x, y: v.y };
+    this.gadgetState.set(part.uid, st);
+    const cmd = this._command(part);
+    if (knock || (cmd != null && cmd > 0)) this._explode(part, el);
+  }
+
+  _explode(part, el) {
+    const t = this.transformOf(part.uid);
+    const body = el.body;
+    for (let b = this.world.getBodyList(); b; b = b.getNext()) {
+      if (!b.isDynamic()) continue;
+      const c = b.getWorldCenter();
+      const dx = c.x - t.x, dy = c.y - t.y, d = Math.hypot(dx, dy);
+      if (d > BOMB_RANGE || (b === body && d < 1e-3)) continue;
+      const J = BOMB_KICK * (1 - d / BOMB_RANGE);
+      const n = d < 1e-3 ? { x: 0, y: 1 } : { x: dx / d, y: dy / d };
+      b.applyLinearImpulse(Vec2(n.x * J, n.y * J), c, true);
+    }
+    this.booms.push({ x: t.x, y: t.y, age: 0 });
+    // Take the bomb out (and its body, if nothing else is on it).
+    this.elements.delete(mainKey(part.uid));
+    for (let f = body.getFixtureList(); f;) {
+      const next = f.getNext();
+      if (f.uid === part.uid) {
+        this.fixtures = this.fixtures.filter((x) => x.fixture !== f);
+        body.destroyFixture(f);
+      }
+      f = next;
+    }
+    if (!body.getFixtureList() && body !== this.ground) {
+      this._dropHolds(body);
+      this.world.destroyBody(body);
+    }
+  }
+
+  /** Explosions happening now, for drawing: [{ x, y, t }] (t = 0..1). */
+  get boomsNow() { return this.booms.map((b) => ({ x: b.x, y: b.y, t: b.age / 0.7 })); }
 
   _gadget(part, kind, dt) {
     const el = this.elements.get(mainKey(part.uid));
@@ -754,13 +947,15 @@ export class Simulation {
       }
     } else if (kind === 'magnet') {
       st.on = cmd == null ? 1 : cmd > 0 ? 1 : 0;
-      if (st.on) this._magnet(t, body);
+      st.held ??= [];
+      if (st.on) this._magnet(t, body, st);
+      else this._letGo(st);
     } else if (kind === 'cannon') {
       // Uncontrolled: fires every 1.5 s. Controlled: on press, then every 0.5 s while held.
       // (The cooldown keeps running while idle, so a fresh press fires at once.)
       const firing = cmd == null || cmd > 0;
       if (firing && st.cool <= 0) {
-        this._fire(t, dir, body);
+        this._fire(t, dir, body, CANNON_POWER[part.props.power] ?? CANNON_SPEED);
         st.cool = cmd == null ? 1.5 : 0.5;
       }
       st.on = Math.max(0, st.cool - (cmd == null ? 1 : 0)) / 0.5; // a puff of smoke just after a shot
@@ -768,16 +963,26 @@ export class Simulation {
     this.gadgetState.set(part.uid, st);
   }
 
-  /** Pull loose objects (crates, balls, hooks, cannon balls) toward the magnet. */
-  _magnet(t, magnetBody) {
+  /** Pull loose objects (crates, balls, hooks, cannon balls) toward the
+   *  magnet; anything that reaches it sticks until the magnet turns off. */
+  _magnet(t, magnetBody, st) {
     for (let b = this.world.getBodyList(); b; b = b.getNext()) {
-      if (!b.isDynamic() || b === magnetBody) continue;
-      let loose = false;
-      for (let f = b.getFixtureList(); f; f = f.getNext()) if (f.getFilterCategoryBits() === CAT.OBJECT) loose = true;
+      if (!b.isDynamic() || b === magnetBody || st.held.some((h) => h.body === b)) continue;
+      let loose = false, size = 0;
+      for (let f = b.getFixtureList(); f; f = f.getNext()) {
+        if (f.getFilterCategoryBits() === CAT.OBJECT) loose = true;
+        const bb = f.getAABB(0);
+        size = Math.max(size, Math.min(bb.upperBound.x - bb.lowerBound.x, bb.upperBound.y - bb.lowerBound.y) / 2);
+      }
       if (!loose) continue;
       const c = b.getWorldCenter();
       const dx = t.x - c.x, dy = t.y - c.y, d = Math.hypot(dx, dy);
       if (d > MAGNET_RANGE || d < 1e-3) continue;
+      if (d < 0.5 + size && st.held.length < MAGNET_GRIP) {
+        // Touching: stick it on.
+        st.held.push({ body: b, joint: this.world.createJoint(WeldJoint({}, magnetBody, b, c)) });
+        continue;
+      }
       // An acceleration (so heavy and light things both come): beats gravity
       // within about 2 m, fades out by MAGNET_RANGE.
       const a = Math.min(50, 60 / (d * d + 1));
@@ -787,14 +992,32 @@ export class Simulation {
     }
   }
 
+  /** Turn a magnet off: drop everything it holds. */
+  _letGo(st) {
+    for (const h of st.held) this.world.destroyJoint(h.joint);
+    st.held = [];
+  }
+
+  /** A body is about to disappear: magnets stop holding it. */
+  _dropHolds(body) {
+    for (const st of this.gadgetState.values()) {
+      if (!st.held) continue;
+      for (const h of st.held.filter((x) => x.body === body)) this.world.destroyJoint(h.joint);
+      st.held = st.held.filter((x) => x.body !== body);
+    }
+  }
+
+  /** Is a magnet holding something? (for drawing) */
+  magnetHolding(uid) { return (this.gadgetState.get(uid)?.held?.length ?? 0) > 0; }
+
   /** Shoot a cannon ball, with a kick back on the cannon. */
-  _fire(t, dir, body) {
+  _fire(t, dir, body, speed = CANNON_SPEED) {
     const r = 0.25, m = 0.6;
     const ball = this.world.createBody({ type: 'dynamic', position: Vec2(t.x + dir.x * 0.75, t.y + dir.y * 0.75), bullet: true });
     this._addFixture(ball, Circle(Vec2(0, 0), r), { density: m / (Math.PI * r * r), friction: 0.5, restitution: 0.3, cat: CAT.OBJECT });
     const v0 = body.getLinearVelocityFromWorldPoint(Vec2(t.x, t.y));
-    ball.setLinearVelocity(Vec2(v0.x + dir.x * CANNON_SPEED, v0.y + dir.y * CANNON_SPEED));
-    if (body.isDynamic()) body.applyLinearImpulse(Vec2(-dir.x * m * CANNON_SPEED, -dir.y * m * CANNON_SPEED), Vec2(t.x, t.y), true);
+    ball.setLinearVelocity(Vec2(v0.x + dir.x * speed, v0.y + dir.y * speed));
+    if (body.isDynamic()) body.applyLinearImpulse(Vec2(-dir.x * m * speed, -dir.y * m * speed), Vec2(t.x, t.y), true);
     this.shots.push({ body: ball, age: 0 });
   }
 

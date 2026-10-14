@@ -157,6 +157,19 @@ body {
 .props-pop .choice { font-size: 13px; margin: 6px 0; }
 .props-pop .toggle { font-size: 13px; }
 .select { font: inherit; font-size: 13px; font-weight: 600; border: 2.5px solid var(--ink); border-radius: 10px; padding: 2px 6px; background: #fff; color: var(--ink); }
+.key-pick { display: flex; align-items: center; gap: 4px; }
+.key-box {
+  font: inherit; font-size: 14px; font-weight: 700; min-width: 44px; padding: 2px 10px;
+  border: 2.5px solid var(--ink); border-radius: 8px; background: #fff; color: var(--ink);
+  box-shadow: 0 3px 0 var(--ink); cursor: pointer;
+}
+.key-box:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.key-box.empty { font-weight: 600; font-size: 12px; opacity: 0.75; }
+.key-box.listening { background: #ffe066; opacity: 1; font-size: 12px; animation: keypulse 0.8s ease-in-out infinite alternate; }
+@keyframes keypulse { from { background: #ffe066; } to { background: #fff3b0; } }
+.key-clear { font: inherit; font-size: 11px; border: none; background: none; cursor: pointer; opacity: 0.5; padding: 2px 4px; color: var(--ink); }
+.key-clear:hover { opacity: 1; }
+.key-clear[hidden] { display: none; }
 .muted { opacity: 0.7; }
 .choice small, .toggle small { opacity: 0.6; font-weight: 500; }
 

@@ -10,7 +10,7 @@
 // =============================================================================
 import { CATEGORIES, PARTS, getDef } from '../parts/partDefs.js';
 import { outerRadius } from '../parts/geometry.js';
-import { drawPart, hasHub, drawChain } from '../render/draw.js';
+import { drawPart, drawWhole, drawChain } from '../render/draw.js';
 
 
 /** How big a part is, so its thumbnail can be scaled to fit. */
@@ -18,8 +18,11 @@ function extentOf(def) {
   if (def.drawn) return (def.length + def.thickness) / 2;
   switch (def.kind) {
     case 'beam': return (def.length + def.thickness) / 2;
-    case 'crate': case 'block': case 'bouncePad': case 'water': return Math.max(def.width, def.height) / 2;
+    case 'crate': case 'block': case 'bouncePad': case 'water': case 'pressurePlate': return Math.max(def.width, def.height) / 2;
     case 'cannon': return 0.85;
+    case 'thruster': return 0.6;
+    case 'latch': return 0.4;
+    case 'bomb': return def.radius * 1.4;
     case 'balloon': return def.radius * 1.5;
     case 'ramp': return Math.max(def.width, def.height) / 2;
     case 'crank': return def.armLength * 0.75;
@@ -44,12 +47,11 @@ export function drawThumb(canvas, def, THUMB_W = 64, THUMB_H = 56) {
     drawChain(ctx, { ...a, r: a.r + 1 }, { ...b, r: b.r + 1 }, 0);
     return;
   }
-  const px = Math.min(26 * THUMB_W / 64, (Math.min(THUMB_W, THUMB_H) / 2 - 3) / extentOf(def));
+  const px = Math.min(40 * THUMB_W / 64, (Math.min(THUMB_W, THUMB_H) / 2 - 3) / extentOf(def));
   // Cranks look best centred on their arm.
   const cx = def.kind === 'crank' ? THUMB_W / 2 - (def.armLength * px) / 2 : THUMB_W / 2;
   const angle = def.kind === 'beam' || def.kind === 'spring' || def.kind === 'rope' ? Math.PI / 9 : 0;
-  drawPart(ctx, def, { sx: cx, sy: THUMB_H / 2, angle }, px);
-  if (hasHub(def.kind)) drawPart(ctx, def, { sx: cx, sy: THUMB_H / 2, angle: def.kind === 'crank' ? 0 : angle }, px, { layer: 'hub' });
+  drawWhole(ctx, def, { sx: cx, sy: THUMB_H / 2, angle }, px);
 }
 
 /**

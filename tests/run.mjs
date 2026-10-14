@@ -691,7 +691,7 @@ test('piston: on its own it pushes out and pulls back again', () => {
   const sim = new Simulation(b, SETTINGS, MAP);
   let hi = -Infinity, lo = Infinity;
   for (let t = 0; t < 3; t += DT) { sim.step(); const y = sim.transformOf(pis.uid, 'hub').y; hi = Math.max(hi, y); if (t > 1) lo = Math.min(lo, y); }
-  near(hi - 2, 1.8, 0.1, 'pushed out ~90% of its length');
+  near(hi - 2, 1.6, 0.1, 'pushed out ~80% of its length');
   assert(lo < 2.3, `pulled back in again (lowest after 1 s: ${lo.toFixed(2)})`);
 });
 
@@ -821,6 +821,230 @@ test('piston: two base joints on one beam stop it swinging', () => {
   };
   near(angleAfter(-0.8), 0, 0.02, 'both joints on the beam: stays level');
   assert(angleAfter(0) < -0.3, 'only the bottom joint on the beam: it swings down');
+});
+
+
+
+console.log('\nTrap doors, latches, bombs, timers, pressure plates, sticky gadgets');
+
+test('piston: can start pushed out, and pulls in first', () => {
+  const b = emptyBuild();
+  const pis = addPart(b, 'piston', 0, 2, Math.PI / 2, { length: 2, extended: true });
+  const tip = socketsOf(pis).find((s) => s.sub === 'hub');
+  near(tip.y, 2 + 1 + 1.6, 1e-6, 'its top joint starts at the pushed-out tip');
+  const sim = new Simulation(b, SETTINGS, MAP);
+  const y0 = sim.transformOf(pis.uid, 'hub').y;
+  run(sim, 0.3);
+  assert(sim.transformOf(pis.uid, 'hub').y < y0 - 0.3, 'on its own it pulls in first');
+  let lo = Infinity;
+  for (let t = 0; t < 1.5; t += DT) { sim.step(); lo = Math.min(lo, sim.transformOf(pis.uid, 'hub').y); }
+  near(y0 - lo, 1.6, 0.1, 'goes all the way in');
+});
+
+test('piston: started pushed out with keys, it stays out until told', () => {
+  const b = emptyBuild();
+  const pis = addPart(b, 'piston', 0, 2, Math.PI / 2, { length: 2, extended: true, keyPlus: 'w', keyMinus: 's' });
+  const sim = new Simulation(b, SETTINGS, MAP);
+  const y0 = sim.transformOf(pis.uid, 'hub').y;
+  run(sim, 1);
+  near(sim.transformOf(pis.uid, 'hub').y, y0, 0.05, 'holds where it started');
+  sim.setKeys(['s']); run(sim, 1);
+  near(sim.transformOf(pis.uid, 'hub').y, y0 - 1.6, 0.1, 'S pulls it in');
+});
+
+const doorBuild = (props) => {
+  const b = emptyBuild();
+  const door = addPart(b, 'trapdoor', 0, 3, 0, { length: 3.2, ...props });  // hinge at x = -1.6, on the background
+  const ball = addPart(b, 'ball-s', 0.8, 3.7, 0);
+  return { b, door, ball };
+};
+
+test('trap door: holds a ball shut, drops it while its key is held', () => {
+  const { b, door, ball } = doorBuild({ keyPlus: 'w' });
+  const asm = buildAssembly(b.parts);
+  assert(asm.hinges.length === 1, 'the flap swings on its hinge');
+  const sim = new Simulation(b, SETTINGS, MAP);
+  run(sim, 1);
+  assert(sim.transformOf(ball.uid).y > 3.3, 'shut: the ball sits on it');
+  sim.setKeys(['w']); run(sim, 1.5);
+  assert(sim.transformOf(ball.uid).y < 1, 'open: the ball fell through');
+  assert(sim.transformOf(door.uid).angle < -1.2, 'opens downward');
+  sim.setKeys([]); run(sim, 1.5);
+  near(sim.transformOf(door.uid).angle, 0, 0.05, 'let go: it closes again');
+});
+
+test('trap door: set to open Up and Snap, it flings a ball', () => {
+  const { b, ball } = doorBuild({ keyPlus: 'w', opens: 'up', speed: 'fast' });
+  b.parts.find((p) => p.uid === ball.uid).x = 1.3;
+  const sim = new Simulation(b, SETTINGS, MAP);
+  run(sim, 0.5);
+  sim.setKeys(['w']);
+  let hi = -Infinity;
+  for (let t = 0; t < 2; t += DT) { sim.step(); hi = Math.max(hi, sim.transformOf(ball.uid).y); }
+  assert(hi > 6, `flung up high (got ${hi.toFixed(2)})`);
+});
+
+test('trap door: its hinge bolts onto a beam it is drawn from', () => {
+  const b = emptyBuild();
+  const beam = addPart(b, 'beam', -3.2, 3, 0, { length: 3.2 });
+  const door = addPart(b, 'trapdoor', 0, 3, 0, { length: 3.2 });
+  const asm = buildAssembly(b.parts);
+  assert(asm.bodyOf(mainKey(beam.uid)) === asm.bodyOf(`${door.uid}:hub`), 'bracket is bolted to the beam');
+  assert(asm.hinges[0].b === asm.bodyOf(mainKey(door.uid)), 'flap swings on it');
+});
+
+test('latch: holds an arm up until its key is pressed', () => {
+  const b = emptyBuild();
+  const arm = addPart(b, 'beam', 1.6, 3, 0, { length: 3.2 });
+  addPart(b, 'pin-rotating', 0, 3);
+  addPart(b, 'latch', 3.0, 3, 0, { keyPlus: 'w' });
+  const sim = new Simulation(b, SETTINGS, MAP);
+  run(sim, 1);
+  near(sim.transformOf(arm.uid).angle, 0, 0.02, 'latched: the arm stays level');
+  sim.setKeys(['w']); run(sim, 1);
+  assert(sim.transformOf(arm.uid).angle < -0.5, 'released: it swings down');
+});
+
+test('latch: with no key it lets go after 2 seconds', () => {
+  const b = emptyBuild();
+  const arm = addPart(b, 'beam', 1.6, 3, 0, { length: 3.2 });
+  addPart(b, 'pin-rotating', 0, 3);
+  addPart(b, 'latch', 3.0, 3, 0);
+  const sim = new Simulation(b, SETTINGS, MAP);
+  run(sim, 1.8);
+  near(sim.transformOf(arm.uid).angle, 0, 0.02, 'still held at 1.8 s');
+  run(sim, 1);
+  assert(sim.transformOf(arm.uid).angle < -0.5, 'let go after 2 s');
+});
+
+test('latch: holds a loose crate in mid-air, and shows when it is open', () => {
+  const b = emptyBuild();
+  const crate = addPart(b, 'crate', 0, 3, 0);
+  const latch = addPart(b, 'latch', 0, 3, 0, { keyPlus: 'w' });
+  const sim = new Simulation(b, SETTINGS, MAP);
+  run(sim, 0.5);
+  near(sim.transformOf(crate.uid).y, 3, 0.02, 'held up');
+  assert(sim.gadgetOn(latch.uid) === 0, 'shows as shut');
+  sim.setKeys(['w']); run(sim, 0.3);
+  assert(sim.transformOf(crate.uid).y < 2.9, 'dropped');
+  assert(sim.gadgetOn(latch.uid) === 1, 'shows as open');
+});
+
+test('latch: catches the arm again when it is pushed back', () => {
+  const b = emptyBuild();
+  const arm = addPart(b, 'beam', 1.6, 3, 0, { length: 3.2 });
+  addPart(b, 'pin-rotating', 0, 3);
+  addPart(b, 'latch', 3.0, 3, 0, { keyPlus: 'w' });
+  const sim = new Simulation(b, SETTINGS, MAP);
+  sim.setKeys(['w']); run(sim, 0.6);
+  sim.setKeys([]);
+  assert(sim.transformOf(arm.uid).angle < -0.3, 'swung down');
+  // Lift it back up by hand, then let go.
+  const tip = sim.transformOf(arm.uid);
+  sim.grabBodyAt({ x: tip.x + Math.cos(tip.angle) * 1.4, y: tip.y + Math.sin(tip.angle) * 1.4 });
+  for (let t = 0; t < 2; t += DT) { sim.dragTo({ x: 3.0, y: 3 }); sim.step(); }
+  sim.release(); run(sim, 1);
+  near(sim.transformOf(arm.uid).angle, 0, 0.06, 'caught level again');
+});
+
+test('magnet: grabs a crate and holds it until switched off', () => {
+  const b = emptyBuild();
+  const mag = addPart(b, 'magnet', 0, 2.4, 0, { keyPlus: 'w' });
+  const crate = addPart(b, 'crate', 0.4, 0.6, 0);
+  const sim = new Simulation(b, SETTINGS, MAP);
+  sim.setKeys(['w']); run(sim, 2);
+  assert(sim.magnetHolding(mag.uid), 'it stuck on');
+  const y = sim.transformOf(crate.uid).y;
+  assert(y > 1.2, `lifted off the ground and held (y ${y.toFixed(2)})`);
+  run(sim, 1);
+  near(sim.transformOf(crate.uid).y, y, 0.05, 'held still, not jiggling');
+  sim.setKeys([]); run(sim, 1.5);
+  assert(!sim.magnetHolding(mag.uid) && sim.transformOf(crate.uid).y < 1, 'off: dropped');
+});
+
+test('cannon: power setting changes how far it shoots', () => {
+  const far = (power) => {
+    const b = emptyBuild();
+    addPart(b, 'cannon', 0, 1, Math.PI / 4, { power, keyPlus: 'w' });
+    const sim = new Simulation(b, SETTINGS, MAP);
+    run(sim, 0.5); sim.setKeys(['w']); sim.step(); sim.setKeys([]);
+    let x = 0;
+    for (let t = 0; t < 4; t += DT) { sim.step(); if (sim.shotsNow[0]) x = Math.max(x, sim.shotsNow[0].x); }
+    return x;
+  };
+  assert(far('high') > far('medium') + 5 && far('medium') > far('low') + 5, 'high > medium > low');
+});
+
+test('bomb: its key blows things away, and it disappears', () => {
+  const b = emptyBuild();
+  const bomb = addPart(b, 'bomb', 0, 0.4, 0, { keyPlus: 'b' });
+  const crate = addPart(b, 'crate', 1.5, 0.6, 0);
+  const sim = new Simulation(b, SETTINGS, MAP);
+  run(sim, 0.5);
+  sim.setKeys(['b']); run(sim, 0.4);
+  assert(sim.transformOf(bomb.uid) === null, 'the bomb is gone');
+  assert(sim.transformOf(crate.uid).x > 2.5, 'the crate was blasted away');
+  assert(sim.boomsNow.length === 1, 'there is a flash');
+});
+
+test('bomb: goes off when dropped from high, not when set down or flung', () => {
+  const b = emptyBuild();
+  const high = addPart(b, 'bomb', 0, 6, 0);
+  const low = addPart(b, 'bomb', 10, 0.5, 0);
+  const sim = new Simulation(b, SETTINGS, MAP);
+  run(sim, 2);
+  assert(sim.transformOf(high.uid) === null, 'the dropped one exploded');
+  assert(sim.transformOf(low.uid) !== null, 'the one set down did not');
+  // A flipper flinging a bomb doesn't set it off.
+  const { b: b2 } = doorBuild({ keyPlus: 'w', opens: 'up', speed: 'fast' });
+  b2.parts = b2.parts.filter((p) => p.type !== 'ball-s');
+  const flung = addPart(b2, 'bomb', 1.2, 3.6, 0);
+  const sim2 = new Simulation(b2, SETTINGS, MAP);
+  run(sim2, 0.5); sim2.setKeys(['w']);
+  let hi = 0;
+  for (let t = 0; t < 0.6; t += DT) { sim2.step(); const tr = sim2.transformOf(flung.uid); if (tr) hi = Math.max(hi, tr.y); }
+  assert(hi > 5, `flung up, still in one piece (got ${hi.toFixed(2)})`);
+});
+
+test('timer: switches wired things on and off by itself', () => {
+  const b = emptyBuild();
+  const tm = addPart(b, 'timer', -3, 1, 0, { every: 1 });
+  const pis = addPart(b, 'piston', 0, 2, Math.PI / 2, { length: 2 });
+  addPart(b, 'wire', 0, 0, 0, { a: tm.uid, b: pis.uid });
+  const sim = new Simulation(b, SETTINGS, MAP);
+  const y0 = sim.transformOf(pis.uid, 'hub').y;
+  run(sim, 0.9);
+  assert(!sim.signals.get(tm.uid), 'off for the first second');
+  near(sim.transformOf(pis.uid, 'hub').y, y0, 0.05, 'piston waits');
+  run(sim, 0.9);
+  assert(sim.signals.get(tm.uid), 'then on');
+  assert(sim.transformOf(pis.uid, 'hub').y > y0 + 1, 'piston pushed out');
+});
+
+test('pressure plate: on while something sits on it', () => {
+  const b = emptyBuild();
+  const pl = addPart(b, 'pressure-plate', 0, 0.15, 0);
+  const crate = addPart(b, 'crate', 0, 3, 0);
+  const sim = new Simulation(b, SETTINGS, MAP);
+  run(sim, 0.2);
+  assert(!sim.signals.get(pl.uid), 'off while empty');
+  run(sim, 1.5);
+  assert(sim.signals.get(pl.uid), 'on once the crate lands on it');
+  sim.grabBodyAt(sim.transformOf(crate.uid)); sim.dragTo({ x: 5, y: 3 }); run(sim, 1.5);
+  assert(!sim.signals.get(pl.uid), 'off again when it is lifted off');
+});
+
+test('snap: gadgets stick onto parts', () => {
+  const b = emptyBuild();
+  addPart(b, 'beam', 0, 3, 0, { length: 4 });
+  const onHole = snapPart(b.parts, 'thruster', 0.45, 3.1, 0);
+  near(onHole.x, 0.4, 1e-6, 'hops onto a beam hole'); near(onHole.y, 3, 1e-6, 'on the hole');
+  const offEdge = snapPart(b.parts, 'magnet', 1.1, 2.3, 0);
+  assert(offEdge.hint === 'stuck to Beam' && offEdge.y > 2.75, `dropped just under the beam, it sticks to it (${offEdge.hint}, y ${offEdge.y.toFixed(2)})`);
+  const far = snapPart(b.parts, 'cannon', 1.1, 0.5, 0);
+  near(far.y, 0.5, 1e-6, 'far away: stays where dropped');
+  const latch = snapPart([...b.parts, { uid: 99, type: 'crate', x: 1.2, y: 3, angle: 0, props: {} }], 'latch', 1.25, 3.05, 0);
+  assert(/^holds (Beam|Crate) \+ (Beam|Crate)$/.test(latch.hint), `latch says what it holds (${latch.hint})`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

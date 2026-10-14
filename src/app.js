@@ -666,6 +666,7 @@ export class App {
       linkEndsOf: (uid) => (this.sim ? this.sim.linkEnds(uid) : null),
       signalOf: (uid) => (this.sim ? this.sim.signals.get(uid) ?? this.sim.gadgetOn(uid) : !!findPart(this.build, uid)?.props.on),
       shots: this.sim?.shotsNow,
+      booms: this.sim?.boomsNow,
       loadOf: (uid) => (this.options.loadView && this.sim ? this.sim.loadOf(uid) : null),
       loadView: this.options.loadView && !!this.sim, // load colours only mean something while running
       squashOf: (uid) => {

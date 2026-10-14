@@ -9,8 +9,8 @@
 // Gears are then rotated so their teeth slot between the neighbour's teeth
 // (purely cosmetic — the physics uses ratio math, not teeth).
 // =============================================================================
-import { getDef, partDef, gearLayers, roleOf, LENGTH_STEP } from './partDefs.js';
-import { socketsOf, gearCirclesOf, holesOf, localToWorld, lineEnds } from './geometry.js';
+import { getDef, partDef, gearLayers, roleOf, pistonExt, LENGTH_STEP } from './partDefs.js';
+import { socketsOf, gearCirclesOf, holesOf, localToWorld, lineEnds, partsAt } from './geometry.js';
 import { MESH_TOL } from '../physics/gearTrain.js';
 
 export const SOCKET_SNAP = 0.5;   // world units
@@ -22,6 +22,7 @@ const roundTo = (v, step) => Math.round(v / step) * step;
 /** Human-friendly description of what a socket belongs to. */
 function socketLabel(def, socket) {
   if (socket?.bolt) return 'on gear hole';
+  if (socket?.mount) return 'on trap door hinge';
   if (socket?.pivot) return def.kind === 'slider' ? 'on slider block' : 'on crank pin';
   switch (def.kind) {
     case 'motor': return 'on motor shaft';
@@ -125,10 +126,13 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
   const useGrid = opts.grid !== false;
   let out = { x, y, angle, hint: null };
 
-  if (def.kind === 'track' || def.kind === 'spring' || def.kind === 'rope' || def.kind === 'piston' || def.kind === 'conveyor') {
+  if (['track', 'spring', 'rope', 'piston', 'conveyor', 'trapdoor'].includes(def.kind)) {
     // Drawn links/track being moved: snap whichever end is closest to a target.
+    // (A trap door snaps by its hinge; a piston's rod may be pushed out.)
     let best = null;
-    for (const lx of [-def.length / 2, def.length / 2]) {
+    const ends = def.kind === 'trapdoor' ? [-def.length / 2]
+      : [-def.length / 2, def.length / 2 + (def.kind === 'piston' ? pistonExt({ props: opts.props }, def) : 0)];
+    for (const lx of ends) {
       const h = localToWorld(x, y, angle, lx, 0);
       const t = nearestAnchor(others, def.kind, h.x, h.y);
       if (t && (!best || t.d < best.d)) best = { ...t, dx: t.x - h.x, dy: t.y - h.y };
@@ -145,7 +149,9 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
     return s ? { x: s.x, y: s.y, angle, hint: `bolts ${socketLabel(getDef(s.part.type), s.socket).replace('on ', 'onto ')}` } : out;
   }
 
-  if (role === 'object' || role === 'link' || role === 'control' || role === 'gadget') {
+  if (role === 'control' || role === 'gadget' || role === 'latch') return stickOn(others, def, out);
+
+  if (role === 'object' || role === 'link') {
     // Loose objects go wherever you drop them (map pieces snap to the grid).
     if (useGrid && (def.kind === 'ramp' || def.kind === 'block' || def.kind === 'bouncePad' || def.kind === 'water')) {
       out.x = roundTo(x, GRID / 2); out.y = roundTo(y, GRID / 2);
@@ -224,6 +230,56 @@ export function snapPart(parts, type, x, y, angle, opts = {}) {
         }
       }
     }
+  }
+  return out;
+}
+
+/** Parts that gadgets, controls and latches can stick onto. */
+const isMountable = (p) => {
+  const def = getDef(p.type);
+  return !['link', 'control', 'bolt', 'gadget', 'latch'].includes(roleOf(def.kind)) && def.kind !== 'water' && def.kind !== 'bomb';
+};
+
+/** "Beam", "Gear 24T"... for snap hints. */
+const shortName = (part) => (getDef(part.type).kind === 'gear' ? gearName(part) : getDef(part.type).name);
+
+export const STICK_SNAP = 0.8;
+
+/**
+ * Gadgets, controls and latches ride on whatever part is under them, so
+ * they hop onto parts: onto a hole or pin right next to the pointer, or onto
+ * the nearest part if you drop them just off its edge.
+ */
+function stickOn(others, def, out) {
+  const solid = others.filter(isMountable);
+  const latchHint = (x, y) => {
+    if (def.kind !== 'latch') return null;
+    const under = partsAt(solid, x, y);
+    return under.length >= 2 ? `holds ${shortName(under[0])} + ${shortName(under[1])}`
+      : under.length === 1 ? `holds ${shortName(under[0])} to the background` : null;
+  };
+  // 1. A hole/pin very close by: sit right on it (gadgets look bolted on).
+  const s = nearestSocket(solid, out.x, out.y, 0.3);
+  if (s) return { ...out, x: s.x, y: s.y, hint: latchHint(s.x, s.y) ?? socketLabel(getDef(s.part.type), s.socket) };
+  // 2. Already over a part: stay put.
+  const under = partsAt(solid, out.x, out.y)[0];
+  if (under) return { ...out, hint: latchHint(out.x, out.y) ?? `on ${shortName(under)}` };
+  // 3. Just off a part's edge: hop onto the closest point of it.
+  let best = null;
+  for (let r = 0.1; r <= STICK_SNAP + 1e-6 && !best; r += 0.1) {
+    for (let i = 0; i < 24; i++) {
+      const a = (i / 24) * Math.PI * 2;
+      const x = out.x + Math.cos(a) * r, y = out.y + Math.sin(a) * r;
+      const hit = partsAt(solid, x, y)[0];
+      if (hit) { best = { x, y, hit }; break; }
+    }
+  }
+  if (best) {
+    // A little further in, so it's solidly on the part.
+    const dx = best.x - out.x, dy = best.y - out.y, d = Math.hypot(dx, dy);
+    let x = best.x + (dx / d) * 0.08, y = best.y + (dy / d) * 0.08;
+    if (!partsAt(solid, x, y).length) { x = best.x; y = best.y; }
+    return { ...out, x, y, hint: latchHint(x, y) ?? `stuck to ${shortName(best.hit)}` };
   }
   return out;
 }

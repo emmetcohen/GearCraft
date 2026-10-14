@@ -8,7 +8,7 @@
 // Nothing here touches the DOM or the physics engine, so it can be unit
 // tested in Node and reused by every mode.
 // =============================================================================
-import { getDef, partDef, gearLayers, faceHoles, pistonMount, HOLE_SPACING, MODULE, roleOf } from './partDefs.js';
+import { getDef, partDef, gearLayers, faceHoles, pistonMount, pistonExt, HOLE_SPACING, MODULE, roleOf } from './partDefs.js';
 
 /** Rotate a local point (lx, ly) by `angle` and move it to (x, y). */
 export function localToWorld(x, y, angle, lx, ly) {
@@ -72,7 +72,12 @@ export function lineFrom(a, b) {
 export function socketsOf(part) {
   const def = partDef(part);
   const role = roleOf(def.kind);
-  if (role === 'object' || role === 'link' || role === 'control' || role === 'bolt' || role === 'gadget') return [];
+  if (role === 'object' || role === 'link' || role === 'control' || role === 'bolt' || role === 'gadget' || role === 'latch') return [];
+  if (role === 'door') {
+    // The hinge, at the end it was drawn from. Its bracket MOUNTS (bolts) onto
+    // whatever is there; the flap swings on the bracket.
+    return [{ ...localToWorld(part.x, part.y, part.angle, -def.length / 2, 0), index: 0, sub: 'hub', pivot: true, mount: true }];
+  }
   if (role === 'piston') {
     // A pivot at each end (the bottom on the cylinder, the top on the rod),
     // plus a second joint on the cylinder: pin both base joints to the same
@@ -80,7 +85,7 @@ export function socketsOf(part) {
     const h = def.length / 2;
     return [
       { ...localToWorld(part.x, part.y, part.angle, -h, 0), index: 0, sub: 'main', pivot: true },
-      { ...localToWorld(part.x, part.y, part.angle, h, 0), index: 1, sub: 'hub', pivot: true },
+      { ...localToWorld(part.x, part.y, part.angle, h + pistonExt(part, def), 0), index: 1, sub: 'hub', pivot: true },
       { ...localToWorld(part.x, part.y, part.angle, -h + pistonMount(def), 0), index: 2, sub: 'main', pivot: true },
     ];
   }
@@ -123,6 +128,11 @@ export function outerRadius(def) {
 export function hitTest(part, wx, wy) {
   const def = partDef(part);
   const p = worldToLocal(part.x, part.y, part.angle, wx, wy);
+  if (def.kind === 'piston') {
+    // Its rod may start pushed out.
+    return p.x >= -def.length / 2 - def.thickness / 2 && p.x <= def.length / 2 + pistonExt(part, def) + 0.2 &&
+           Math.abs(p.y) <= def.thickness / 2 + 0.05;
+  }
   if (def.drawn) {
     return Math.abs(p.x) <= def.length / 2 + def.thickness / 2 &&
            Math.abs(p.y) <= Math.max(def.thickness / 2, 0.2) + 0.05;
@@ -136,7 +146,7 @@ export function hitTest(part, wx, wy) {
       const h = def.housing / 2;
       return Math.abs(p.x) <= h && Math.abs(p.y) <= h;
     }
-    case 'crate': case 'block': {
+    case 'crate': case 'block': case 'pressurePlate': {
       return Math.abs(p.x) <= def.width / 2 && Math.abs(p.y) <= def.height / 2;
     }
     case 'ramp': {
@@ -160,8 +170,8 @@ export function hitTest(part, wx, wy) {
  *  clicking a pin on a gear selects the pin. Higher = picked first. */
 export function pickPriority(def) {
   if (def.kind === 'spring' || def.kind === 'rope') return 3.5;
-  if (roleOf(def.kind) === 'control' || roleOf(def.kind) === 'bolt' || roleOf(def.kind) === 'gadget') return 5;
-  if (def.kind === 'piston') return 1.5;
+  if (['control', 'bolt', 'gadget', 'latch'].includes(roleOf(def.kind))) return 5;
+  if (def.kind === 'piston' || def.kind === 'trapdoor') return 1.5;
   if (def.kind === 'water' || def.kind === 'conveyor' || def.kind === 'bouncePad') return 0;
   if (def.kind === 'track') return 0;
   switch (roleOf(def.kind)) {
